@@ -1,6 +1,7 @@
 import json
 import streamlit as st
 import pandas as pd
+import altair as alt
 
 from ea_client import fetch_club_bundle
 from storage import SupabaseStore, StoreError
@@ -80,7 +81,6 @@ st.markdown("""
   <div class="sh-hero-footer">FC 27 &nbsp; / &nbsp; PLAYSTATION 5 &nbsp; / &nbsp; CLUB ANALYTICS</div>
 </div>
 """, unsafe_allow_html=True)
-st.caption("Unofficial fan-made dashboard · Not affiliated with Middlesbrough FC or EA")
 
 # This dashboard is permanently pinned to StereoHearts FC.
 CLUB_NAME = "StereoHearts FC"
@@ -147,6 +147,47 @@ members = data.get("member_stats", [])
 matches = data.get("matches", [])
 match_players = data.get("match_players", [])
 
+# Read structured matches once for the snapshot, Overview and Analytics tabs.
+def read_all_rows(table_name, club_id, page_size=1000):
+    rows = []
+    offset = 0
+    while True:
+        response = (
+            store.client.table(table_name)
+            .select("*")
+            .eq("club_id", int(club_id))
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            return rows
+        offset += page_size
+
+try:
+    stored_matches = pd.DataFrame(read_all_rows("matches", CLUB_ID))
+    structured_matches_error = None
+except Exception as exc:
+    stored_matches = pd.DataFrame()
+    structured_matches_error = str(exc)
+
+
+def opponent_goals(row):
+    """Use explicitly named opponent-goal fields only; never infer from results."""
+    raw = row.get("raw_data")
+    if not isinstance(raw, dict):
+        raw = {}
+    for source in (raw, row):
+        for key in ("goalsAgainst", "goalsConceded", "opponentGoals", "opponentScore", "goals_against"):
+            value = source.get(key)
+            if value is not None and str(value).strip() != "":
+                number = pd.to_numeric(value, errors="coerce")
+                if pd.notna(number):
+                    return int(number)
+    return None
+
+
 st.markdown('<div class="sh-section"><strong>CLUB SNAPSHOT</strong></div>', unsafe_allow_html=True)
 if st.session_state.get("last_sync_count"):
     st.caption(f"Last sync saved {st.session_state['last_sync_count']} records.")
@@ -169,20 +210,79 @@ m2.metric("Wins", get_value(overall_df, ["wins", "gamesWon"]))
 m3.metric("Goals scored", get_value(overall_df, ["goals", "goalsFor", "goalsScored"]))
 m4.metric("Skill rating", get_value(overall_df, ["skillRating", "rating"]))
 
+# All-time recorded results from the structured match archive, not the 10-match raw snapshot.
+st.markdown("#### Recorded results")
+if structured_matches_error:
+    st.warning(f"Could not load match results: {structured_matches_error}")
+elif stored_matches.empty or "result" not in stored_matches.columns:
+    st.info("No archived match results available for the win/draw/loss chart yet.")
+else:
+    result_labels = stored_matches["result"].fillna("").astype(str).str.strip().str.lower()
+    result_counts = [
+        {"Result": "Wins", "Matches": int(result_labels.isin(["win", "w"]).sum())},
+        {"Result": "Draws", "Matches": int(result_labels.isin(["draw", "d", "tie"]).sum())},
+        {"Result": "Losses", "Matches": int(result_labels.isin(["loss", "lose", "l"]).sum())},
+    ]
+    counted = sum(x["Matches"] for x in result_counts)
+    if counted:
+        chart_col, info_col = st.columns([1.3, 1], vertical_alignment="center")
+        with chart_col:
+            chart_data = pd.DataFrame(result_counts)
+            donut = (alt.Chart(chart_data)
+                .mark_arc(innerRadius=80, outerRadius=125)
+                .encode(
+                    theta=alt.Theta("Matches:Q", stack=True),
+                    color=alt.Color("Result:N", scale=alt.Scale(
+                        domain=["Wins", "Draws", "Losses"],
+                        range=["#C8102E", "#B7BBC3", "#20242B"]),
+                        legend=alt.Legend(orient="bottom", title=None)),
+                    tooltip=["Result:N", "Matches:Q"])
+                .properties(height=300))
+            st.altair_chart(donut, use_container_width=True)
+        with info_col:
+            st.metric("Recorded matches", counted)
+            st.metric("Win rate", f"{result_counts[0]['Matches'] / counted:.1%}")
+            st.caption("Based on matches archived in Supabase; may not include the club's entire history.")
+    else:
+        st.info("Match results are present but none are recognised as wins, draws or losses.")
+
 tab_overview, tab_squad, tab_matches, tab_analytics, tab_players, tab_compare, tab_archive = st.tabs(
     ["Overview", "Squad", "Matches", "Analytics", "Players", "Compare", "Raw data"]
 )
 
 with tab_overview:
     st.subheader("Recent form")
-    if not match_df.empty:
-        result_col = first_existing(match_df, ["result"])
-        if result_col:
-            form = match_df[result_col].astype(str).str.upper().head(10).tolist()
-            st.write("  ·  ".join(form) if form else "No match results recorded.")
-        st.dataframe(match_df.head(10), use_container_width=True, hide_index=True)
-    else:
+    if structured_matches_error:
+        st.warning(f"Could not load recent results: {structured_matches_error}")
+    elif stored_matches.empty:
         st.info("No archived matches yet. Use **Sync latest EA data** in the sidebar.")
+    else:
+        recent = stored_matches.copy()
+        recent["played_at"] = pd.to_datetime(recent["played_at"], utc=True, errors="coerce")
+        recent = recent.sort_values("played_at", ascending=False).head(10)
+        display = pd.DataFrame({
+            "DNF": recent["dnf"].map(lambda v: "—" if pd.isna(v) else ("Yes" if str(v).lower() in ("true", "1") else "No")),
+            "Result": recent["result"].fillna("—").astype(str).str.title(),
+            "Goals for": pd.to_numeric(recent["goals"], errors="coerce").astype("Int64"),
+            "Goals against": pd.Series([opponent_goals(row) for _, row in recent.iterrows()], index=recent.index, dtype="Int64"),
+        })
+
+        def shade_result(row):
+            result = str(row["Result"]).lower()
+            if result in ("win", "w"):
+                bg, fg = "#DCFCE7", "#166534"  # Green: win
+            elif result in ("draw", "d", "tie"):
+                bg, fg = "#F1F2F4", "#30343B"
+            elif result in ("loss", "lose", "l"):
+                bg, fg = "#FEE2E2", "#991B1B"  # Red: loss
+            else:
+                bg, fg = "transparent", "inherit"
+            return [f"background-color: {bg}; color: {fg}" for _ in row]
+
+        st.dataframe(display.style.apply(shade_result, axis=1),
+                     use_container_width=True, hide_index=True)
+        if display["Goals against"].isna().any():
+            st.caption("Goals against is shown as blank where EA's archived match record doesn't provide an explicit opponent score.")
 
 with tab_squad:
     st.subheader("Player statistics")
@@ -227,29 +327,10 @@ with tab_analytics:
     st.subheader("StereoHearts FC — match analytics")
     st.caption("Figures cover only matches saved in Supabase, not necessarily the club's full FC 27 history.")
 
-    def read_all_rows(table_name, club_id, page_size=1000):
-        rows = []
-        offset = 0
-        while True:
-            response = (
-                store.client.table(table_name)
-                .select("*")
-                .eq("club_id", int(club_id))
-                .range(offset, offset + page_size - 1)
-                .execute()
-            )
-            batch = response.data or []
-            rows.extend(batch)
-            if len(batch) < page_size:
-                return rows
-            offset += page_size
-
     try:
-        stored_matches = pd.DataFrame(read_all_rows("matches", CLUB_ID))
         stored_players = pd.DataFrame(read_all_rows("match_player_stats", CLUB_ID))
     except Exception as exc:
-        st.error(f"Could not load structured analytics: {exc}")
-        stored_matches = pd.DataFrame()
+        st.error(f"Could not load player analytics: {exc}")
         stored_players = pd.DataFrame()
 
     if stored_matches.empty:
