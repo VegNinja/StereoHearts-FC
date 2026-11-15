@@ -70,6 +70,7 @@ class SupabaseStore:
                 saved += 1
 
         self.save_analytics(club_id, bundle)
+        self.save_opponents(club_id, bundle.get("opponent_players", []))
         return saved
 
     def save_analytics(self, club_id: str, bundle: dict):
@@ -147,6 +148,37 @@ class SupabaseStore:
                 on_conflict="club_id,match_id,player_id",
             ).execute()
 
+
+    def save_opponents(self, club_id: str, records: list):
+        """Separate table avoids opponent/player ID collision in club stats."""
+        rows = []
+        for item in records:
+            if not isinstance(item, dict):
+                continue
+            match_id = self._integer(item.get("matchId"))
+            player_id = self._integer(item.get("playerId"))
+            opponent_id = self._integer(item.get("clubId"))
+            if None in (match_id, player_id, opponent_id):
+                raise StoreError("Opponent row missing matchId/playerId/clubId")
+            if opponent_id == self._integer(club_id):
+                raise StoreError("Own-club player found in opponent records")
+            rows.append({
+                "club_id": self._integer(club_id),
+                "match_id": match_id,
+                "opponent_club_id": opponent_id,
+                "player_id": player_id,
+                "player_name": item.get("name"),
+                "position": item.get("position"),
+                "raw_data": self._json_safe(item),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+        unique = {(r["club_id"], r["match_id"], r["opponent_club_id"], r["player_id"]): r for r in rows}
+        if unique:
+            self.client.table("opponent_player_stats").upsert(
+                list(unique.values()),
+                on_conflict="club_id,match_id,opponent_club_id,player_id",
+            ).execute()
+
     def load_bundle(self, club_id: str) -> dict:
         result = {}
         try:
@@ -158,20 +190,15 @@ class SupabaseStore:
                 .limit(5000)
                 .execute()
             )
-
-
             for row in response.data or []:
                 kind = row["record_type"]
                 payload = row["payload"]
-
                 if kind in ("club_details", "overall_stats"):
                     result.setdefault(kind, payload)
                 else:
                     result.setdefault(kind, [])
                     if payload not in result[kind]:
                         result[kind].append(payload)
-
             return result
-
         except Exception as exc:
             raise StoreError(str(exc)) from exc
