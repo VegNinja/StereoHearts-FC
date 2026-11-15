@@ -2,10 +2,10 @@ import json
 import streamlit as st
 import pandas as pd
 
-from ea_client import find_club, fetch_club_bundle
+from ea_client import fetch_club_bundle
 from storage import SupabaseStore, StoreError
 
-st.set_page_config(page_title="FC 27 Club Dashboard", page_icon="⚽", layout="wide")
+st.set_page_config(page_title="FC 27 Club Dashboard", page_icon="âš½", layout="wide")
 
 st.markdown("""
 <style>
@@ -32,73 +32,58 @@ def first_existing(df, candidates):
             return name
     return None
 
-st.title("⚽ Pro Clubs — Club Dashboard")
-st.caption("FC 27 · PlayStation 5 · Unofficial community API")
+st.title("âš½ Pro Clubs â€” Club Dashboard")
+st.caption("FC 27 Â· PlayStation 5 Â· Unofficial community API")
+
+# This dashboard is permanently pinned to StereoHearts FC.
+CLUB_NAME = "StereoHearts FC"
+CLUB_ID = "400349"
+
+st.session_state["club_name"] = CLUB_NAME
+st.session_state["club_id"] = CLUB_ID
 
 with st.sidebar:
-    st.header("Club setup")
-    club_name = st.text_input("Club name", value=st.session_state.get("club_name", ""))
-    if st.button("Find club", type="primary", use_container_width=True):
-        if not club_name.strip():
-            st.warning("Enter your exact club name first.")
-        else:
-            try:
-                with st.spinner("Searching EA..."):
-                    found = find_club(club_name.strip())
-                st.session_state["club_name"] = club_name.strip()
-                st.session_state["club_id"] = str(found["club_id"])
-                st.session_state["club_details"] = found.get("details", {})
-                st.success(f"Found club ID {found['club_id']}")
-            except Exception as exc:
-                st.error(str(exc))
+    st.header("Club")
+    st.subheader(CLUB_NAME)
+    st.caption(f"EA Club ID: `{CLUB_ID}`")
+    st.caption("This dashboard is fixed to StereoHearts FC. The club selector has been removed.")
+    st.caption("The website is read-only for visitors. Admin access is required to sync EA data.")
 
-    if st.session_state.get("club_id"):
-        st.caption(f"Selected club ID: `{st.session_state['club_id']}`")
-        st.caption("The website is read-only for visitors. Admin access is required to sync EA data.")
-        try:
-            expected_password = st.secrets["app"]["admin_password"]
-        except Exception:
-            expected_password = ""
-        if expected_password:
-            entered_password = st.text_input("Admin password", type="password")
-            if st.button("Unlock sync controls", use_container_width=True):
-                st.session_state["admin_unlocked"] = (entered_password == expected_password)
-                if not st.session_state["admin_unlocked"]:
-                    st.error("Incorrect admin password.")
-            if st.session_state.get("admin_unlocked"):
-                if st.button("Sync latest EA data", type="primary", use_container_width=True):
-                    store = get_store()
-                    if store is None:
-                        st.error("Supabase is not configured yet. Follow the README setup steps.")
-                    else:
-                        try:
-                            with st.spinner("Collecting club, squad and recent match data..."):
-                                bundle = fetch_club_bundle(int(st.session_state["club_id"]))
-                                count = store.save_bundle(
-                                    st.session_state["club_id"],
-                                    st.session_state.get("club_name", "Club"),
-                                    bundle
-                                )
-                            st.session_state["last_sync_count"] = count
-                            st.success(f"Saved {count} records.")
-                        except Exception as exc:
-                            st.error(f"Sync failed: {exc}")
-        else:
-            st.warning("Add an app.admin_password secret before deploying. Sync controls remain disabled until then.")
+    try:
+        expected_password = st.secrets["app"]["admin_password"]
+    except Exception:
+        expected_password = ""
+
+    if expected_password:
+        entered_password = st.text_input("Admin password", type="password")
+        if st.button("Unlock sync controls", use_container_width=True):
+            st.session_state["admin_unlocked"] = (entered_password == expected_password)
+            if not st.session_state["admin_unlocked"]:
+                st.error("Incorrect admin password.")
+
+        if st.session_state.get("admin_unlocked"):
+            if st.button("Sync latest EA data", type="primary", use_container_width=True):
+                store = get_store()
+                if store is None:
+                    st.error("Supabase is not configured yet. Follow the README setup steps.")
+                else:
+                    try:
+                        with st.spinner(f"Collecting {CLUB_NAME} club, squad and recent match data..."):
+                            bundle = fetch_club_bundle(int(CLUB_ID))
+                            count = store.save_bundle(
+                                CLUB_ID,
+                                CLUB_NAME,
+                                bundle
+                            )
+                        st.session_state["last_sync_count"] = count
+                        st.success(f"Saved {count} records for {CLUB_NAME}.")
+                    except Exception as exc:
+                        st.error(f"Sync failed: {exc}")
+    else:
+        st.warning("Add an app.admin_password secret before deploying. Sync controls remain disabled until then.")
 
 st.divider()
 store = get_store()
-if not st.session_state.get("club_id"):
-    st.info("Start by entering your exact Pro Clubs name in the sidebar and selecting **Find club**.")
-    st.markdown("""
-    ### What this dashboard will contain
-    - Club overview and current-season record
-    - Squad statistics and player leaderboard
-    - Recent match results and match-by-match player performances
-    - A growing historical archive as you sync data
-    """)
-    st.stop()
-
 if store is None:
     st.warning("The club has been selected, but the database is not connected. Configure Supabase using the README before syncing.")
     st.stop()
@@ -128,8 +113,8 @@ def get_value(df, names):
     col = first_existing(df, names)
     if col and not df.empty:
         val = df.iloc[0][col]
-        return val if pd.notna(val) else "—"
-    return "—"
+        return val if pd.notna(val) else "â€”"
+    return "â€”"
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Played", get_value(overall_df, ["gamesPlayed", "games", "matchesPlayed", "appearances"]))
@@ -147,7 +132,7 @@ with tab_overview:
         result_col = first_existing(match_df, ["result"])
         if result_col:
             form = match_df[result_col].astype(str).str.upper().head(10).tolist()
-            st.write("  ·  ".join(form) if form else "No match results recorded.")
+            st.write("  Â·  ".join(form) if form else "No match results recorded.")
         st.dataframe(match_df.head(10), use_container_width=True, hide_index=True)
     else:
         st.info("No archived matches yet. Use **Sync latest EA data** in the sidebar.")
