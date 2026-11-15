@@ -5,7 +5,7 @@ import pandas as pd
 from ea_client import fetch_club_bundle
 from storage import SupabaseStore, StoreError
 
-st.set_page_config(page_title="FC 27 Club Dashboard", page_icon="Ã¢Å¡Â½", layout="wide")
+st.set_page_config(page_title="FC 27 Club Dashboard", page_icon="âš½", layout="wide")
 
 st.markdown("""
 <style>
@@ -113,8 +113,8 @@ def get_value(df, names):
     col = first_existing(df, names)
     if col and not df.empty:
         val = df.iloc[0][col]
-        return val if pd.notna(val) else "Ã¢â‚¬â€"
-    return "Ã¢â‚¬â€"
+        return val if pd.notna(val) else "â€”"
+    return "â€”"
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Played", get_value(overall_df, ["gamesPlayed", "games", "matchesPlayed", "appearances"]))
@@ -122,8 +122,8 @@ m2.metric("Wins", get_value(overall_df, ["wins", "gamesWon"]))
 m3.metric("Goals scored", get_value(overall_df, ["goals", "goalsFor", "goalsScored"]))
 m4.metric("Skill rating", get_value(overall_df, ["skillRating", "rating"]))
 
-tab_overview, tab_squad, tab_matches, tab_analytics, tab_archive = st.tabs(
-    ["Overview", "Squad", "Matches", "Analytics", "Raw data"]
+tab_overview, tab_squad, tab_matches, tab_analytics, tab_players, tab_archive = st.tabs(
+    ["Overview", "Squad", "Matches", "Analytics", "Players", "Raw data"]
 )
 
 with tab_overview:
@@ -286,3 +286,140 @@ with tab_analytics:
             leaderboard = player_summary.sort_values([sort_metric, "Appearances"], ascending=False, na_position="last")
             st.dataframe(leaderboard[display_columns], use_container_width=True, hide_index=True)
             st.caption("Pass and tackle percentages use total successful actions divided by total attempts. Missing attempts display as blank. Average rating is per recorded appearance.")
+
+
+# Player profiles use the same structured Supabase tables as the Analytics tab.
+with tab_players:
+    st.subheader("StereoHearts FC â€” player profiles")
+    st.caption("Statistics are based on archived match performances, not necessarily full career totals.")
+
+    if stored_players.empty or "player_id" not in stored_players.columns:
+        st.info("No player performances are available yet. Run an EA sync first.")
+    else:
+        profiles = stored_players.copy()
+        profiles["player_id"] = profiles["player_id"].astype(str)
+        profiles["match_id"] = profiles["match_id"].astype(str)
+        profiles = profiles.drop_duplicates(subset=["match_id", "player_id"], keep="last")
+        profiles["player_name"] = profiles["player_name"].fillna("Unknown player").astype(str)
+        profiles["position"] = profiles["position"].fillna("Unknown").astype(str)
+
+        # Use the latest available name, but retain player ID as the stable identity.
+        if "played_at" in profiles.columns:
+            profiles["played_at"] = pd.to_datetime(profiles["played_at"], utc=True, errors="coerce")
+        else:
+            profiles["played_at"] = pd.NaT
+        if not stored_matches.empty and {"match_id", "match_type", "played_at"}.issubset(stored_matches.columns):
+            match_lookup = stored_matches[["match_id", "match_type", "played_at"]].copy()
+            match_lookup["match_id"] = match_lookup["match_id"].astype(str)
+            match_lookup = match_lookup.drop_duplicates("match_id")
+            match_lookup = match_lookup.rename(columns={"played_at": "match_played_at"})
+            profiles = profiles.merge(match_lookup, on="match_id", how="left")
+            profiles["played_at"] = profiles["played_at"].fillna(
+                pd.to_datetime(profiles["match_played_at"], utc=True, errors="coerce")
+            )
+        else:
+            profiles["match_type"] = "Unknown"
+        profiles["match_type"] = profiles["match_type"].fillna("Unknown").astype(str)
+        profiles = profiles.sort_values("played_at", na_position="last")
+
+        labels = {}
+        for pid, group in profiles.groupby("player_id"):
+            name = group["player_name"].iloc[-1]
+            labels[pid] = f"{name} (ID {pid})"
+        selected_id = st.selectbox(
+            "Player", sorted(labels, key=lambda pid: labels[pid].casefold()),
+            format_func=lambda pid: labels[pid], key="profile_player"
+        )
+        player_all = profiles[profiles["player_id"] == selected_id].copy()
+        positions = sorted(player_all["position"].unique().tolist())
+        types = sorted(player_all["match_type"].unique().tolist())
+        p_col, t_col = st.columns(2)
+        with p_col:
+            selected_positions = st.multiselect(
+                "Position", positions, default=positions, key="profile_positions",
+                help="Only performances at the selected match positions are included."
+            )
+        with t_col:
+            selected_types = st.multiselect(
+                "Match type", types, default=types, key="profile_match_types"
+            )
+        selected = player_all[
+            player_all["position"].isin(selected_positions)
+            & player_all["match_type"].isin(selected_types)
+        ].copy()
+
+        numeric = ["goals", "assists", "rating", "seconds_played", "passes_made",
+                   "pass_attempts", "tackles_made", "tackle_attempts", "clean_sheet",
+                   "man_of_the_match", "shots", "saves", "red_cards"]
+        for field in numeric:
+            if field not in selected.columns:
+                selected[field] = pd.NA
+            selected[field] = pd.to_numeric(selected[field], errors="coerce")
+            if field not in player_all.columns:
+                player_all[field] = pd.NA
+            player_all[field] = pd.to_numeric(player_all[field], errors="coerce")
+
+        def percentage(frame, made, attempts):
+            completed = frame[made].sum()
+            total = frame[attempts].sum()
+            return f"{100 * completed / total:.1f}%" if total > 0 else "â€”"
+
+        if selected.empty:
+            st.info("No performances match these filters. Choose at least one position and match type.")
+        else:
+            appearances = selected["match_id"].nunique()
+            avg_rating = selected["rating"].mean()
+            metrics = [
+                ("Appearances", f"{appearances}"),
+                ("Goals", f"{int(selected['goals'].sum())}"),
+                ("Assists", f"{int(selected['assists'].sum())}"),
+                ("Average rating", f"{avg_rating:.2f}" if pd.notna(avg_rating) else "â€”"),
+                ("Minutes", f"{selected['seconds_played'].sum() / 60:.1f}"),
+                ("Player of match", f"{int(selected['man_of_the_match'].sum())}"),
+                ("Clean sheets", f"{int(selected['clean_sheet'].sum())}"),
+                ("Pass accuracy", percentage(selected, "passes_made", "pass_attempts")),
+                ("Tackle success", percentage(selected, "tackles_made", "tackle_attempts")),
+            ]
+            for start in range(0, len(metrics), 3):
+                columns = st.columns(3)
+                for column, (label, value) in zip(columns, metrics[start:start + 3]):
+                    column.metric(label, value)
+
+            st.subheader("Match rating trend")
+            rating_history = selected.sort_values("played_at").copy()
+            rating_history = rating_history.dropna(subset=["rating"])
+            if rating_history.empty:
+                st.info("No match ratings are available for this selection.")
+            else:
+                rating_history["Match"] = range(1, len(rating_history) + 1)
+                st.line_chart(rating_history.set_index("Match")["rating"], y_label="Match rating")
+
+            st.subheader("Performance by position")
+            # Position comparison uses all match types but does not restrict to the
+            # selected position(s), so comparisons remain meaningful.
+            comparison_source = player_all[player_all["match_type"].isin(selected_types)]
+            summary = comparison_source.groupby("position", dropna=False).agg(
+                Appearances=("match_id", "nunique"),
+                Goals=("goals", "sum"),
+                Assists=("assists", "sum"),
+                Rating=("rating", "mean"),
+                Minutes=("seconds_played", "sum"),
+                Passes=("passes_made", "sum"),
+                Attempts=("pass_attempts", "sum"),
+            ).reset_index().rename(columns={"position": "Position"})
+            summary["Minutes"] = (summary["Minutes"] / 60).round(1)
+            summary["Rating"] = summary["Rating"].round(2)
+            summary["Pass %"] = (100 * summary["Passes"] / summary["Attempts"].replace(0, float("nan"))).round(1)
+            st.dataframe(summary[["Position", "Appearances", "Goals", "Assists", "Rating", "Minutes", "Pass %"]],
+                         use_container_width=True, hide_index=True)
+            st.caption("Position comparison includes all positions for the selected match types.")
+
+            st.subheader("Match-by-match performances")
+            columns = ["played_at", "match_type", "position", "rating", "goals", "assists",
+                       "seconds_played", "passes_made", "pass_attempts", "tackles_made",
+                       "tackle_attempts", "saves", "match_id"]
+            history = selected.sort_values("played_at", ascending=False)[columns].copy()
+            history["seconds_played"] = (history["seconds_played"] / 60).round(1)
+            history.columns = ["Date", "Match type", "Position", "Rating", "Goals", "Assists",
+                               "Minutes", "Passes", "Pass attempts", "Tackles", "Tackle attempts", "Saves", "Match ID"]
+            st.dataframe(history, use_container_width=True, hide_index=True)
