@@ -129,7 +129,6 @@ with st.sidebar:
     else:
         st.warning("Add an app.admin_password secret before deploying. Sync controls remain disabled until then.")
 
-st.divider()
 store = get_store()
 if store is None:
     st.warning("The club has been selected, but the database is not connected. Configure Supabase using the README before syncing.")
@@ -188,131 +187,268 @@ def opponent_goals(row):
     return None
 
 
-st.markdown('<div class="sh-section"><strong>CLUB SNAPSHOT</strong></div>', unsafe_allow_html=True)
-if st.session_state.get("last_sync_count"):
-    st.caption(f"Last sync saved {st.session_state['last_sync_count']} records.")
+# Shared archived datasets are prepared before any tabs render.
+try:
+    stored_players = pd.DataFrame(read_all_rows("match_player_stats", CLUB_ID))
+except Exception as exc:
+    st.warning(f"Could not load player statistics: {exc}")
+    stored_players = pd.DataFrame()
 
-# Summary cards use known fields where available; raw API payloads remain accessible below.
-overall_df = records_to_df([overall] if isinstance(overall, dict) else overall)
-member_df = records_to_df(members)
-match_df = records_to_df(matches)
+def _prepared_matches():
+    if stored_matches.empty:
+        return pd.DataFrame()
+    frame = stored_matches.copy()
+    frame["match_id"] = frame["match_id"].astype(str)
+    frame = frame.drop_duplicates(subset=["match_id"], keep="last")
+    frame["played_at"] = pd.to_datetime(frame["played_at"], utc=True, errors="coerce")
+    frame["result_label"] = frame["result"].fillna("").astype(str).str.strip().str.lower().map(
+        {"win": "W", "w": "W", "draw": "D", "d": "D", "tie": "D", "loss": "L", "lose": "L", "l": "L"}
+    )
+    frame["goals_for"] = pd.to_numeric(frame["goals"], errors="coerce")
+    frame["goals_against"] = frame.apply(opponent_goals, axis=1)
+    return frame.sort_values(["played_at", "match_id"], ascending=[True, True], na_position="first")
 
-def get_value(df, names):
-    col = first_existing(df, names)
-    if col and not df.empty:
-        val = df.iloc[0][col]
-        return val if pd.notna(val) else "—"
-    return "—"
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Played", get_value(overall_df, ["gamesPlayed", "games", "matchesPlayed", "appearances"]))
-m2.metric("Wins", get_value(overall_df, ["wins", "gamesWon"]))
-m3.metric("Goals scored", get_value(overall_df, ["goals", "goalsFor", "goalsScored"]))
-m4.metric("Skill rating", get_value(overall_df, ["skillRating", "rating"]))
+def _prepared_players():
+    if stored_players.empty or "match_id" not in stored_players or "player_id" not in stored_players:
+        return pd.DataFrame()
+    frame = stored_players.copy()
+    frame["match_id"] = frame["match_id"].astype(str)
+    frame["player_id"] = frame["player_id"].astype(str)
+    frame = frame.drop_duplicates(["match_id", "player_id"], keep="last")
+    for field in ("goals", "assists", "rating", "seconds_played", "clean_sheet", "man_of_the_match",
+                  "saves", "tackles_made", "tackle_attempts", "passes_made", "pass_attempts", "shots"):
+        if field not in frame:
+            frame[field] = float("nan")
+        frame[field] = pd.to_numeric(frame[field], errors="coerce")
+    for field, default in (("player_name", "Unknown player"), ("position", "Unknown")):
+        if field not in frame.columns:
+            frame[field] = default
+        frame[field] = frame[field].fillna(default).astype(str)
 
-# All-time recorded results from the structured match archive, not the 10-match raw snapshot.
-st.markdown("#### Recorded results")
-if structured_matches_error:
-    st.warning(f"Could not load match results: {structured_matches_error}")
-elif stored_matches.empty or "result" not in stored_matches.columns:
-    st.info("No archived match results available for the win/draw/loss chart yet.")
-else:
-    result_labels = stored_matches["result"].fillna("").astype(str).str.strip().str.lower()
-    result_counts = [
-        {"Result": "Wins", "Matches": int(result_labels.isin(["win", "w"]).sum())},
-        {"Result": "Draws", "Matches": int(result_labels.isin(["draw", "d", "tie"]).sum())},
-        {"Result": "Losses", "Matches": int(result_labels.isin(["loss", "lose", "l"]).sum())},
-    ]
-    counted = sum(x["Matches"] for x in result_counts)
-    if counted:
-        chart_col, info_col = st.columns([1.3, 1], vertical_alignment="center")
-        with chart_col:
-            chart_data = pd.DataFrame(result_counts)
-            donut = (alt.Chart(chart_data)
-                .mark_arc(innerRadius=80, outerRadius=125)
-                .encode(
-                    theta=alt.Theta("Matches:Q", stack=True),
-                    color=alt.Color("Result:N", scale=alt.Scale(
-                        domain=["Wins", "Draws", "Losses"],
-                        range=["#C8102E", "#B7BBC3", "#20242B"]),
-                        legend=alt.Legend(orient="bottom", title=None)),
-                    tooltip=["Result:N", "Matches:Q"])
-                .properties(height=300))
-            st.altair_chart(donut, use_container_width=True)
-        with info_col:
-            st.metric("Recorded matches", counted)
-            st.metric("Win rate", f"{result_counts[0]['Matches'] / counted:.1%}")
-            st.caption("Based on matches archived in Supabase; may not include the club's entire history.")
-    else:
-        st.info("Match results are present but none are recognised as wins, draws or losses.")
+    # Match type belongs to the matches table, not necessarily match_player_stats.
+    # Enrich each performance by its match_id without duplicating player rows.
+    if "match_type" not in frame.columns:
+        frame["match_type"] = pd.NA
+    if "played_at" not in frame.columns:
+        frame["played_at"] = pd.NaT
+    if not all_matches.empty and {"match_id", "match_type"}.issubset(all_matches.columns):
+        lookup = all_matches.drop_duplicates("match_id", keep="last").set_index("match_id")
+        frame["match_type"] = frame["match_type"].fillna(frame["match_id"].map(lookup["match_type"]))
+        if "played_at" in lookup.columns:
+            frame["played_at"] = pd.to_datetime(frame["played_at"], utc=True, errors="coerce").fillna(
+                pd.to_datetime(frame["match_id"].map(lookup["played_at"]), utc=True, errors="coerce")
+            )
+    frame["match_type"] = frame["match_type"].fillna("Unknown").astype(str)
+    frame["played_at"] = pd.to_datetime(frame["played_at"], utc=True, errors="coerce")
+    return frame
 
-tab_overview, tab_squad, tab_matches, tab_analytics, tab_players, tab_compare, tab_form, tab_awards, tab_centre, tab_advanced, tab_events, tab_explorer, tab_archive = st.tabs(
-    ["Overview", "Squad", "Matches", "Analytics", "Players", "Compare", "Club form", "Awards", "Match centre", "Advanced", "Deep stats", "Data explorer", "Raw data"]
+
+
+
+
+all_matches = _prepared_matches()
+all_performances = _prepared_players()
+
+# Navigation follows the landing banner; Club Snapshot is the default first tab.
+tab_snapshot, tab_squad, tab_matches, tab_analytics, tab_players, tab_compare, tab_awards, tab_centre, tab_advanced, tab_events, tab_explorer, tab_archive = st.tabs(
+    ["Club Snapshot", "Squad", "Matches", "Analytics", "Players", "Compare", "Awards", "Match centre", "Advanced", "Deep stats", "Data explorer", "Raw data"]
 )
 
-with tab_overview:
-    st.subheader("Recent form")
+with tab_snapshot:
+    st.subheader("Club Snapshot")
+    if st.session_state.get("last_sync_count"):
+        st.caption(f"Last manual sync processed {st.session_state['last_sync_count']} records.")
+    overall_df = records_to_df([overall] if isinstance(overall, dict) else overall)
+    def get_value(df, names):
+        col = first_existing(df, names)
+        if col and not df.empty:
+            val = df.iloc[0][col]
+            return val if pd.notna(val) else "—"
+        return "—"
+    snapshot_metrics = [
+        ("Played", get_value(overall_df, ["gamesPlayed", "games", "matchesPlayed", "appearances"])),
+        ("Wins", get_value(overall_df, ["wins", "gamesWon"])),
+        ("Goals scored", get_value(overall_df, ["goals", "goalsFor", "goalsScored"])),
+        ("Skill rating", get_value(overall_df, ["skillRating", "rating"])),
+    ]
+    for idx in range(0, len(snapshot_metrics), 2):
+        left, right = st.columns(2)
+        for col, (label, value) in zip((left, right), snapshot_metrics[idx:idx + 2]):
+            col.metric(label, value)
+
+    st.subheader("Recorded results")
+    if structured_matches_error:
+        st.warning(f"Could not load match results: {structured_matches_error}")
+    elif all_matches.empty:
+        st.info("No archived match results are available yet.")
+    else:
+        results = all_matches["result_label"].dropna()
+        result_counts = pd.DataFrame({
+            "Result": ["Wins", "Draws", "Losses"],
+            "Matches": [int(results.eq("W").sum()), int(results.eq("D").sum()), int(results.eq("L").sum())],
+        })
+        counted = int(result_counts["Matches"].sum())
+        if counted:
+            chart_col, info_col = st.columns([1.3, 1], vertical_alignment="center")
+            with chart_col:
+                donut = (alt.Chart(result_counts).mark_arc(innerRadius=80, outerRadius=125)
+                    .encode(theta=alt.Theta("Matches:Q", stack=True),
+                        color=alt.Color("Result:N", scale=alt.Scale(
+                            domain=["Wins", "Draws", "Losses"],
+                            range=["#16A34A", "#9CA3AF", "#DC2626"]),
+                            legend=alt.Legend(orient="bottom", title=None)),
+                        tooltip=["Result:N", "Matches:Q"]).properties(height=300))
+                st.altair_chart(donut, use_container_width=True)
+            with info_col:
+                st.metric("Recorded matches", counted)
+                st.metric("Win rate", f"{result_counts.iloc[0]['Matches'] / counted:.1%}")
+                st.caption("Based on archived matches, which may not cover the club's entire history.")
+        else:
+            st.info("No recognised win, draw or loss results have been archived.")
+
+
+def event_counter(raw, names):
+    """Extract only an explicitly named EA event field; missing stays unknown."""
+    if not isinstance(raw, dict):
+        return float("nan")
+    nested = pd.json_normalize(raw, sep=".").iloc[0].to_dict()
+    for key in names:
+        if key in nested:
+            return pd.to_numeric(nested[key], errors="coerce")
+        for full_key, value in nested.items():
+            if full_key.rsplit(".", 1)[-1] == key:
+                return pd.to_numeric(value, errors="coerce")
+    return float("nan")
+
+
+with tab_squad:
+    st.subheader("Squad Overview")
+    st.caption("One row per player. Position filters apply to the position played in each archived match.")
+    if all_performances.empty:
+        st.info("No archived player performances are available.")
+    else:
+        frame = all_performances.copy()
+        positions = sorted(frame["position"].dropna().unique().tolist())
+        position = st.selectbox("Position", ["All positions"] + positions, key="squad_position")
+        if position != "All positions":
+            frame = frame[frame["position"] == position].copy()
+        if frame.empty:
+            st.info("No player performances at this position.")
+        else:
+            # These counters are available only when the decoded EA events contain them.
+            won_keys = ("possessionWonDefensiveThird", "possessionWonMiddleThird", "possessionWonAttackingThird")
+            lost_keys = ("possessionLostDefensiveThird", "possessionLostMiddleThird", "possessionLostAttackingThird")
+            def total_pitch_events(raw, keys):
+                values = [event_counter(raw, [key]) for key in keys]
+                return sum(values) if all(pd.notna(v) for v in values) else float("nan")
+            if "raw_data" in frame.columns:
+                frame["possession_won"] = frame["raw_data"].apply(lambda raw: total_pitch_events(raw, won_keys))
+                frame["possession_lost"] = frame["raw_data"].apply(lambda raw: total_pitch_events(raw, lost_keys))
+            else:
+                frame["possession_won"] = float("nan")
+                frame["possession_lost"] = float("nan")
+            frame = frame.sort_values("played_at", na_position="first")
+            rows = []
+            for pid, group in frame.groupby("player_id", dropna=False):
+                apps = group["match_id"].nunique()
+                goals = group["goals"].sum(min_count=1)
+                assists = group["assists"].sum(min_count=1)
+                shots = group["shots"].sum(min_count=1)
+                position_counts = group["position"].value_counts()
+                most_played = position_counts.index[0] if not position_counts.empty else "—"
+                won = group["possession_won"]
+                lost = group["possession_lost"]
+                rows.append({
+                    "Player": group["player_name"].iloc[-1],
+                    "Appearances": apps,
+                    "Most played position": most_played,
+                    "Average rating": round(group["rating"].mean(), 2) if group["rating"].notna().any() else None,
+                    "Goals": int(goals) if pd.notna(goals) else None,
+                    "Conversion rate": round(100 * goals / shots, 1) if pd.notna(goals) and pd.notna(shots) and shots > 0 else None,
+                    "Assists": int(assists) if pd.notna(assists) else None,
+                    "Goal involvements / game": round((goals + assists) / apps, 2) if apps and pd.notna(goals) and pd.notna(assists) else None,
+                    "Possession won / game": round(won.sum() / apps, 2) if apps and won.notna().all() else None,
+                    "Possession lost / game": round(lost.sum() / apps, 2) if apps and lost.notna().all() else None,
+                })
+            squad_overview = pd.DataFrame(rows).sort_values(["Appearances", "Player"], ascending=[False, True])
+            st.dataframe(squad_overview, use_container_width=True, hide_index=True,
+                column_config={"Conversion rate": st.column_config.NumberColumn("Conversion rate", format="%.1f%%")})
+            st.caption("Conversion rate = goals ÷ recorded shots. Possession rates require all three pitch-third event counters for every included appearance; missing values are left blank.")
+
+
+with tab_matches:
+    st.subheader("Recent results")
     if structured_matches_error:
         st.warning(f"Could not load recent results: {structured_matches_error}")
-    elif stored_matches.empty:
-        st.info("No archived matches yet. Use **Sync latest EA data** in the sidebar.")
+    elif all_matches.empty:
+        st.info("No archived matches yet.")
     else:
-        recent = stored_matches.copy()
-        recent["played_at"] = pd.to_datetime(recent["played_at"], utc=True, errors="coerce")
-        recent = recent.sort_values("played_at", ascending=False).head(10)
+        recent = all_matches.sort_values("played_at", ascending=False).head(10)
         display = pd.DataFrame({
             "DNF": recent["dnf"].map(lambda v: "—" if pd.isna(v) else ("Yes" if str(v).lower() in ("true", "1") else "No")),
             "Result": recent["result"].fillna("—").astype(str).str.title(),
-            "Goals for": pd.to_numeric(recent["goals"], errors="coerce").astype("Int64"),
-            "Goals against": pd.Series([opponent_goals(row) for _, row in recent.iterrows()], index=recent.index, dtype="Int64"),
+            "Goals for": recent["goals_for"].astype("Int64"),
+            "Goals against": recent["goals_against"].astype("Int64"),
         })
-
         def shade_result(row):
             result = str(row["Result"]).lower()
             if result in ("win", "w"):
-                bg, fg = "#DCFCE7", "#166534"  # Green: win
+                bg, fg = "#DCFCE7", "#166534"
             elif result in ("draw", "d", "tie"):
                 bg, fg = "#F1F2F4", "#30343B"
             elif result in ("loss", "lose", "l"):
-                bg, fg = "#FEE2E2", "#991B1B"  # Red: loss
+                bg, fg = "#FEE2E2", "#991B1B"
             else:
                 bg, fg = "transparent", "inherit"
             return [f"background-color: {bg}; color: {fg}" for _ in row]
-
-        st.dataframe(display.style.apply(shade_result, axis=1),
-                     use_container_width=True, hide_index=True)
+        st.dataframe(display.style.apply(shade_result, axis=1), use_container_width=True, hide_index=True)
         if display["Goals against"].isna().any():
-            st.caption("Goals against is shown as blank where EA's archived match record doesn't provide an explicit opponent score.")
+            st.caption("Opponent goals are blank where EA's archived record doesn't contain them.")
 
-with tab_squad:
-    st.subheader("Player statistics")
-    if member_df.empty:
-        st.info("No squad statistics saved yet.")
-    else:
-        sort_col = first_existing(member_df, ["goals", "assists", "rating", "gamesPlayed"])
-        if sort_col:
-            member_df = member_df.sort_values(sort_col, ascending=False)
-        st.dataframe(member_df, use_container_width=True, hide_index=True)
-        player_col = first_existing(member_df, ["name", "playerName", "username"])
-        goals_col = first_existing(member_df, ["goals"])
-        assists_col = first_existing(member_df, ["assists"])
-        if player_col and goals_col:
-            chart_cols = [player_col, goals_col] + ([assists_col] if assists_col else [])
-            chart = member_df[chart_cols].set_index(player_col)
-            st.bar_chart(chart)
+    st.subheader("Club form & performance trends")
+    st.caption("Based on archived results only; the rolling chart excludes unrecognised results.")
+    if not all_matches.empty:
+        types = sorted(all_matches["match_type"].dropna().astype(str).unique().tolist())
+        chosen_types = st.multiselect("Match types", types, default=types, key="form_types")
+        window = st.selectbox("Recent match window", [5, 10, 20, 50], index=1, key="form_window")
+        f = all_matches[all_matches["match_type"].isin(chosen_types)].dropna(subset=["result_label"]).copy()
+        if f.empty:
+            st.info("No matches with recognised results match these filters.")
+        else:
+            recent = f.tail(window).copy()
+            w = int(recent["result_label"].eq("W").sum())
+            d = int(recent["result_label"].eq("D").sum())
+            l = int(recent["result_label"].eq("L").sum())
+            metrics = [
+                ("Recorded matches", len(recent)), ("W / D / L", f"{w} / {d} / {l}"),
+                ("Win rate", f"{w / len(recent):.1%}"),
+                ("Goals scored", int(recent["goals_for"].sum()) if recent["goals_for"].notna().all() else "Incomplete"),
+                ("Goals conceded", int(recent["goals_against"].sum()) if recent["goals_against"].notna().all() else "Unavailable / incomplete"),
+            ]
+            streak = 0
+            for result in reversed(f["result_label"].tolist()):
+                if result == "L":
+                    break
+                streak += 1
+            metrics.append(("Current unbeaten streak", streak))
+            for start in range(0, len(metrics), 2):
+                cols = st.columns(2)
+                for col, (label, value) in zip(cols, metrics[start:start + 2]):
+                    col.metric(label, value)
+            f["Win"] = f["result_label"].eq("W").astype(int)
+            f["Rolling win rate (%)"] = (f["Win"].rolling(window, min_periods=1).mean() * 100).round(1)
+            f["Match number"] = range(1, len(f) + 1)
+            st.subheader("Rolling win percentage")
+            st.line_chart(f.set_index("Match number")[["Rolling win rate (%)"]], y_label="Win rate (%)")
+            st.subheader("Goals scored vs conceded")
+            g = recent[["goals_for", "goals_against"]].copy()
+            g.index = range(1, len(g) + 1)
+            g.index.name = "Recent match (oldest first)"
+            st.bar_chart(g.rename(columns={"goals_for": "Goals for", "goals_against": "Goals against"}))
+            if recent["goals_against"].isna().any():
+                st.caption("Some opponent scores are unavailable; missing values are not estimated.")
 
-with tab_matches:
-    st.subheader("Recent matches")
-    if match_df.empty:
-        st.info("No matches archived yet.")
-    else:
-        st.dataframe(match_df, use_container_width=True, hide_index=True)
-    st.subheader("Player performances in collected matches")
-    players_df = records_to_df(match_players)
-    if players_df.empty:
-        st.info("No per-match player data saved yet.")
-    else:
-        st.dataframe(players_df, use_container_width=True, hide_index=True)
 
 with tab_archive:
     st.subheader("Stored source records")
@@ -326,12 +462,6 @@ with tab_archive:
 with tab_analytics:
     st.subheader("StereoHearts FC — match analytics")
     st.caption("Figures cover only matches saved in Supabase, not necessarily the club's full FC 27 history.")
-
-    try:
-        stored_players = pd.DataFrame(read_all_rows("match_player_stats", CLUB_ID))
-    except Exception as exc:
-        st.error(f"Could not load player analytics: {exc}")
-        stored_players = pd.DataFrame()
 
     if stored_matches.empty:
         st.info("No structured matches yet. Run Sync latest EA data in the sidebar.")
@@ -544,12 +674,12 @@ with tab_players:
             st.caption("Position comparison includes all positions for the selected match types.")
 
             st.subheader("Match-by-match performances")
-            columns = ["played_at", "match_type", "position", "rating", "goals", "assists",
+            columns = ["position", "rating", "goals", "assists",
                        "seconds_played", "passes_made", "pass_attempts", "tackles_made",
                        "tackle_attempts", "saves", "match_id"]
             history = selected.sort_values("played_at", ascending=False)[columns].copy()
             history["seconds_played"] = (history["seconds_played"] / 60).round(1)
-            history.columns = ["Date", "Match type", "Position", "Rating", "Goals", "Assists",
+            history.columns = ["Position", "Rating", "Goals", "Assists",
                                "Minutes", "Passes", "Pass attempts", "Tackles", "Tackle attempts", "Saves", "Match ID"]
             st.dataframe(history, use_container_width=True, hide_index=True)
 
@@ -557,7 +687,7 @@ with tab_players:
 # Head-to-head player comparisons use the same archived, structured performances.
 with tab_compare:
     st.subheader("Head-to-head player comparison")
-    st.caption("Compare two squad members using the same match-type and position filters. Figures reflect archived performances only.")
+    st.caption("Compare two squad members across all archived match types, with an optional shared position filter.")
     if profiles.empty or profiles["player_id"].nunique() < 2:
         st.info("At least two players with archived match performances are needed for comparisons.")
     else:
@@ -575,16 +705,10 @@ with tab_compare:
             st.warning("Select two different players to compare.")
         else:
             both = profiles[profiles["player_id"].isin([player_a, player_b])].copy()
-            types = sorted(both["match_type"].unique().tolist())
             positions = sorted(both["position"].unique().tolist())
-            filter_left, filter_right = st.columns(2)
-            with filter_left:
-                selected_types_cmp = st.multiselect("Match type", types, default=types, key="compare_types")
-            with filter_right:
-                selected_positions_cmp = st.multiselect("Position", positions, default=positions,
-                    key="compare_positions", help="Only performances at the selected positions count for either player.")
-            both = both[both["match_type"].isin(selected_types_cmp)
-                        & both["position"].isin(selected_positions_cmp)].copy()
+            selected_positions_cmp = st.multiselect("Position", positions, default=positions,
+                key="compare_positions", help="Only performances at the selected positions count for either player.")
+            both = both[both["position"].isin(selected_positions_cmp)].copy()
             fields = ["goals", "assists", "rating", "seconds_played", "passes_made", "pass_attempts",
                       "tackles_made", "tackle_attempts", "clean_sheet", "man_of_the_match", "shots", "saves"]
             for field in fields:
@@ -617,8 +741,20 @@ with tab_compare:
                 str(latest_names[player_a]): list(summary_a.values()),
                 str(latest_names[player_b]): list(summary_b.values()),
             })
-            st.dataframe(comparison, hide_index=True, use_container_width=True)
-            st.caption("Goals and assists per game use recorded appearances. Pass and tackle rates use summed successful actions divided by summed attempts. Blank values mean no usable data.")
+            def highlight_comparison(row):
+                a_val = pd.to_numeric(row.iloc[1], errors="coerce")
+                b_val = pd.to_numeric(row.iloc[2], errors="coerce")
+                styles = ["", "", ""]
+                if pd.notna(a_val) and pd.notna(b_val) and a_val != b_val:
+                    # More is better for every displayed comparison metric.
+                    winner = 1 if a_val > b_val else 2
+                    loser = 2 if winner == 1 else 1
+                    styles[winner] = "background-color: #DCFCE7; color: #166534"
+                    styles[loser] = "background-color: #FEE2E2; color: #991B1B"
+                return styles
+            st.dataframe(comparison.style.apply(highlight_comparison, axis=1),
+                         hide_index=True, use_container_width=True)
+            st.caption("Green is the higher value, red is the lower value; ties and unavailable values remain neutral. Goals and assists per game use recorded appearances. Pass and tackle rates use summed successful actions divided by summed attempts. Blank values mean no usable data.")
             st.subheader("Match ratings over time")
             chart = both.dropna(subset=["rating", "played_at"]).sort_values("played_at").copy()
             if chart.empty:
@@ -632,106 +768,6 @@ with tab_compare:
 
 
 # Additional analytics use the same archived match and performance rows as the original tabs.
-def _prepared_matches():
-    if stored_matches.empty:
-        return pd.DataFrame()
-    frame = stored_matches.copy()
-    frame["match_id"] = frame["match_id"].astype(str)
-    frame = frame.drop_duplicates(subset=["match_id"], keep="last")
-    frame["played_at"] = pd.to_datetime(frame["played_at"], utc=True, errors="coerce")
-    frame["result_label"] = frame["result"].fillna("").astype(str).str.strip().str.lower().map(
-        {"win": "W", "w": "W", "draw": "D", "d": "D", "tie": "D", "loss": "L", "lose": "L", "l": "L"}
-    )
-    frame["goals_for"] = pd.to_numeric(frame["goals"], errors="coerce")
-    frame["goals_against"] = frame.apply(opponent_goals, axis=1)
-    return frame.sort_values(["played_at", "match_id"], ascending=[True, True], na_position="first")
-
-
-def _prepared_players():
-    if stored_players.empty or "match_id" not in stored_players or "player_id" not in stored_players:
-        return pd.DataFrame()
-    frame = stored_players.copy()
-    frame["match_id"] = frame["match_id"].astype(str)
-    frame["player_id"] = frame["player_id"].astype(str)
-    frame = frame.drop_duplicates(["match_id", "player_id"], keep="last")
-    for field in ("goals", "assists", "rating", "seconds_played", "clean_sheet", "man_of_the_match",
-                  "saves", "tackles_made", "tackle_attempts", "passes_made", "pass_attempts", "shots"):
-        if field not in frame:
-            frame[field] = float("nan")
-        frame[field] = pd.to_numeric(frame[field], errors="coerce")
-    for field, default in (("player_name", "Unknown player"), ("position", "Unknown")):
-        if field not in frame.columns:
-            frame[field] = default
-        frame[field] = frame[field].fillna(default).astype(str)
-
-    # Match type belongs to the matches table, not necessarily match_player_stats.
-    # Enrich each performance by its match_id without duplicating player rows.
-    if "match_type" not in frame.columns:
-        frame["match_type"] = pd.NA
-    if "played_at" not in frame.columns:
-        frame["played_at"] = pd.NaT
-    if not all_matches.empty and {"match_id", "match_type"}.issubset(all_matches.columns):
-        lookup = all_matches.drop_duplicates("match_id", keep="last").set_index("match_id")
-        frame["match_type"] = frame["match_type"].fillna(frame["match_id"].map(lookup["match_type"]))
-        if "played_at" in lookup.columns:
-            frame["played_at"] = pd.to_datetime(frame["played_at"], utc=True, errors="coerce").fillna(
-                pd.to_datetime(frame["match_id"].map(lookup["played_at"]), utc=True, errors="coerce")
-            )
-    frame["match_type"] = frame["match_type"].fillna("Unknown").astype(str)
-    frame["played_at"] = pd.to_datetime(frame["played_at"], utc=True, errors="coerce")
-    return frame
-
-
-all_matches = _prepared_matches()
-all_performances = _prepared_players()
-
-with tab_form:
-    st.subheader("Club form & performance trends")
-    st.caption("Recorded matches only. The trend is chronological and excludes matches with unrecognised results.")
-    if all_matches.empty:
-        st.info("No archived matches are available.")
-    else:
-        types = sorted(all_matches["match_type"].dropna().astype(str).unique().tolist())
-        chosen_types = st.multiselect("Match types", types, default=types, key="form_types")
-        window = st.selectbox("Recent match window", [5, 10, 20, 50], index=1, key="form_window")
-        f = all_matches[all_matches["match_type"].isin(chosen_types)].dropna(subset=["result_label"]).copy()
-        if f.empty:
-            st.info("No matches with recognised results match these filters.")
-        else:
-            recent = f.tail(window).copy()
-            w = int(recent["result_label"].eq("W").sum())
-            d = int(recent["result_label"].eq("D").sum())
-            l = int(recent["result_label"].eq("L").sum())
-            a, b, c, e = st.columns(4)
-            a.metric("Recorded matches", len(recent))
-            b.metric("W / D / L", f"{w} / {d} / {l}")
-            c.metric("Win rate", f"{w / len(recent):.1%}")
-            e.metric("Goals scored", int(recent["goals_for"].sum()) if recent["goals_for"].notna().all() else "Incomplete")
-            known_against = recent["goals_against"].notna().all()
-            st.metric("Goals conceded", int(recent["goals_against"].sum()) if known_against else "Unavailable / incomplete")
-            streak = 0
-            for result in reversed(f["result_label"].tolist()):
-                if result == "L":
-                    break
-                streak += 1
-            st.metric("Current unbeaten streak (recorded matches)", streak)
-            f["Win"] = f["result_label"].eq("W").astype(int)
-            f["Rolling win rate (%)"] = (f["Win"].rolling(window, min_periods=1).mean() * 100).round(1)
-            f["Match number"] = range(1, len(f) + 1)
-            st.subheader("Rolling win percentage")
-            st.line_chart(f.set_index("Match number")[["Rolling win rate (%)"]], y_label="Win rate (%)")
-            st.caption(f"Rolling window: up to {window} archived matches. Early points use fewer matches.")
-            st.subheader("Goals scored vs conceded")
-            g = recent[["goals_for", "goals_against"]].copy()
-            g.index = range(1, len(g) + 1)
-            g.index.name = "Recent match (oldest first)"
-            st.bar_chart(g.rename(columns={"goals_for": "Goals for", "goals_against": "Goals against"}))
-            if not known_against:
-                st.caption("Some opponent scores are missing; their bars are omitted rather than estimated.")
-            st.subheader("Results by match type")
-            breakdown = pd.crosstab(f["match_type"].fillna("Unknown"), f["result_label"]).reindex(columns=["W", "D", "L"], fill_value=0)
-            st.dataframe(breakdown.rename(columns={"W": "Wins", "D": "Draws", "L": "Losses"}), use_container_width=True)
-
 with tab_awards:
     st.subheader("Squad awards & leaderboards")
     st.caption("Awards use archived individual performances. Appearance minimum applies to every award.")
