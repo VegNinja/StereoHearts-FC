@@ -158,3 +158,20 @@ class SupabaseStore:
                 .limit(5000)
                 .execute()
             )
+
+
+            for row in response.data or []:
+                kind = row["record_type"]
+                payload = row["payload"]
+
+                if kind in ("club_details", "overall_stats"):
+                    result.setdefault(kind, payload)
+                else:
+                    result.setdefault(kind, [])
+                    if payload not in result[kind]:
+                        result[kind].append(payload)
+
+            return result
+
+        except Exception as exc:
+            raise StoreError(str(exc)) from exc
