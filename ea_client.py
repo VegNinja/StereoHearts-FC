@@ -35,7 +35,12 @@ def fetch_club_bundle(club_id: int) -> dict:
     league_matches = _as_list(api.get_club_matches(club_id, match_type="leagueMatch", count=10))
     friendlies = _as_list(api.get_club_matches(club_id, match_type="friendlyMatch", count=10))
     playoff_matches = _as_list(api.get_club_matches(club_id, match_type="playoffMatch", count=10))
-    match_players = _as_list(api.get_match_players(club_id, match_type="leagueMatch", count=10))
+    # Collect player performances for every match category we already archive.
+    # Do not swallow API errors: a failed category should fail the sync visibly.
+    match_players = []
+    for match_type in ("leagueMatch", "friendlyMatch", "playoffMatch"):
+        rows = _as_list(api.get_match_players(club_id, match_type=match_type, count=10))
+        match_players.extend(rows)
     return {
         "club_details": details if isinstance(details, dict) else (details[0] if details else {}),
         "overall_stats": overall if isinstance(overall, dict) else (overall[0] if isinstance(overall, list) and overall else {}),
