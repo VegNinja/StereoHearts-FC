@@ -33,6 +33,18 @@ h1 {font-weight: 800 !important;}
 /* Tables and expanders get understated borders rather than heavy red fills. */
 [data-testid="stDataFrame"] {border: 1px solid #E5E6E8; border-radius: 9px; overflow: hidden;}
 [data-testid="stExpander"] {border-radius: 9px;}
+/* Club landing-page hero: red-and-white football identity. */
+.sh-hero {background:linear-gradient(115deg,#a50924 0%,#c8102e 68%,#e22b46 100%);color:white;
+  border-radius:16px;padding:30px 34px;margin:0 0 22px;position:relative;overflow:hidden;
+  box-shadow:0 8px 24px rgba(70,10,22,.12);}
+.sh-hero::after {content:"";position:absolute;right:5%;top:-50px;width:105px;height:220px;
+  transform:rotate(26deg);background:rgba(255,255,255,.12);box-shadow:150px 0 0 rgba(255,255,255,.07);}
+.sh-kicker {font-size:.76rem;font-weight:750;letter-spacing:.17em;text-transform:uppercase;opacity:.88;}
+.sh-name {font-size:clamp(1.9rem,4.5vw,3.2rem);line-height:1.1;font-weight:850;margin:10px 0 8px;}
+.sh-subtitle {font-size:1rem;opacity:.94;}
+.sh-hero-footer {margin-top:22px;padding-top:12px;border-top:1px solid rgba(255,255,255,.28);
+  font-size:.82rem;letter-spacing:.04em;}
+.sh-section {border-left:5px solid #C8102E;padding-left:14px;margin:10px 0 16px;}
 /* Respect Streamlit's dark-mode text colours instead of forcing dark text on dark backgrounds. */
 @media (prefers-color-scheme: dark) {
   [data-testid="stMetric"] {background: #262830; border-color: #41434B; border-top-color: #C8102E;}
@@ -60,8 +72,15 @@ def first_existing(df, candidates):
             return name
     return None
 
-st.title("StereoHearts FC Club Dashboard")
-st.caption("FC 27 · PlayStation 5 · Unofficial community API")
+st.markdown("""
+<div class="sh-hero">
+  <div class="sh-kicker">StereoHearts FC · Club headquarters</div>
+  <div class="sh-name">STEREOHEARTS FC</div>
+  <div class="sh-subtitle">The home of our squad, results and player performance</div>
+  <div class="sh-hero-footer">FC 27 &nbsp; / &nbsp; PLAYSTATION 5 &nbsp; / &nbsp; CLUB ANALYTICS</div>
+</div>
+""", unsafe_allow_html=True)
+st.caption("Unofficial fan-made dashboard · Not affiliated with Middlesbrough FC or EA")
 
 # This dashboard is permanently pinned to StereoHearts FC.
 CLUB_NAME = "StereoHearts FC"
@@ -128,7 +147,7 @@ members = data.get("member_stats", [])
 matches = data.get("matches", [])
 match_players = data.get("match_players", [])
 
-st.subheader(st.session_state.get("club_name", "Your club"))
+st.markdown('<div class="sh-section"><strong>CLUB SNAPSHOT</strong></div>', unsafe_allow_html=True)
 if st.session_state.get("last_sync_count"):
     st.caption(f"Last sync saved {st.session_state['last_sync_count']} records.")
 
@@ -150,8 +169,8 @@ m2.metric("Wins", get_value(overall_df, ["wins", "gamesWon"]))
 m3.metric("Goals scored", get_value(overall_df, ["goals", "goalsFor", "goalsScored"]))
 m4.metric("Skill rating", get_value(overall_df, ["skillRating", "rating"]))
 
-tab_overview, tab_squad, tab_matches, tab_analytics, tab_players, tab_archive = st.tabs(
-    ["Overview", "Squad", "Matches", "Analytics", "Players", "Raw data"]
+tab_overview, tab_squad, tab_matches, tab_analytics, tab_players, tab_compare, tab_archive = st.tabs(
+    ["Overview", "Squad", "Matches", "Analytics", "Players", "Compare", "Raw data"]
 )
 
 with tab_overview:
@@ -317,6 +336,7 @@ with tab_analytics:
 
 
 # Player profiles use the same structured Supabase tables as the Analytics tab.
+profiles = pd.DataFrame()
 with tab_players:
     st.subheader("StereoHearts FC — player profiles")
     st.caption("Statistics are based on archived match performances, not necessarily full career totals.")
@@ -451,3 +471,80 @@ with tab_players:
             history.columns = ["Date", "Match type", "Position", "Rating", "Goals", "Assists",
                                "Minutes", "Passes", "Pass attempts", "Tackles", "Tackle attempts", "Saves", "Match ID"]
             st.dataframe(history, use_container_width=True, hide_index=True)
+
+
+# Head-to-head player comparisons use the same archived, structured performances.
+with tab_compare:
+    st.subheader("Head-to-head player comparison")
+    st.caption("Compare two squad members using the same match-type and position filters. Figures reflect archived performances only.")
+    if profiles.empty or profiles["player_id"].nunique() < 2:
+        st.info("At least two players with archived match performances are needed for comparisons.")
+    else:
+        latest_names = (profiles.sort_values("played_at", na_position="first")
+                        .groupby("player_id")["player_name"].last().to_dict())
+        player_ids = sorted(latest_names, key=lambda pid: (str(latest_names[pid]).casefold(), pid))
+        left, right = st.columns(2)
+        with left:
+            player_a = st.selectbox("Player A", player_ids, index=0,
+                                    format_func=lambda pid: f"{latest_names[pid]} (ID {pid})", key="compare_a")
+        with right:
+            player_b = st.selectbox("Player B", player_ids, index=1,
+                                    format_func=lambda pid: f"{latest_names[pid]} (ID {pid})", key="compare_b")
+        if player_a == player_b:
+            st.warning("Select two different players to compare.")
+        else:
+            both = profiles[profiles["player_id"].isin([player_a, player_b])].copy()
+            types = sorted(both["match_type"].unique().tolist())
+            positions = sorted(both["position"].unique().tolist())
+            filter_left, filter_right = st.columns(2)
+            with filter_left:
+                selected_types_cmp = st.multiselect("Match type", types, default=types, key="compare_types")
+            with filter_right:
+                selected_positions_cmp = st.multiselect("Position", positions, default=positions,
+                    key="compare_positions", help="Only performances at the selected positions count for either player.")
+            both = both[both["match_type"].isin(selected_types_cmp)
+                        & both["position"].isin(selected_positions_cmp)].copy()
+            fields = ["goals", "assists", "rating", "seconds_played", "passes_made", "pass_attempts",
+                      "tackles_made", "tackle_attempts", "clean_sheet", "man_of_the_match", "shots", "saves"]
+            for field in fields:
+                if field not in both.columns:
+                    both[field] = pd.NA
+                both[field] = pd.to_numeric(both[field], errors="coerce")
+            def compare_summary(pid):
+                frame = both[both["player_id"] == pid]
+                apps = frame["match_id"].nunique()
+                total_passes = frame["pass_attempts"].sum()
+                total_tackles = frame["tackle_attempts"].sum()
+                return {
+                    "Appearances": apps,
+                    "Goals": int(frame["goals"].sum()),
+                    "Assists": int(frame["assists"].sum()),
+                    "Goals / game": round(frame["goals"].sum() / apps, 2) if apps else None,
+                    "Assists / game": round(frame["assists"].sum() / apps, 2) if apps else None,
+                    "Average rating": round(frame["rating"].mean(), 2) if frame["rating"].notna().any() else None,
+                    "Minutes": round(frame["seconds_played"].sum() / 60, 1),
+                    "Pass accuracy %": round(100 * frame["passes_made"].sum() / total_passes, 1) if total_passes > 0 else None,
+                    "Tackle success %": round(100 * frame["tackles_made"].sum() / total_tackles, 1) if total_tackles > 0 else None,
+                    "Clean sheets": int(frame["clean_sheet"].sum()),
+                    "Player of match": int(frame["man_of_the_match"].sum()),
+                    "Shots": int(frame["shots"].sum()),
+                    "Saves": int(frame["saves"].sum()),
+                }
+            summary_a, summary_b = compare_summary(player_a), compare_summary(player_b)
+            comparison = pd.DataFrame({
+                "Metric": list(summary_a.keys()),
+                str(latest_names[player_a]): list(summary_a.values()),
+                str(latest_names[player_b]): list(summary_b.values()),
+            })
+            st.dataframe(comparison, hide_index=True, use_container_width=True)
+            st.caption("Goals and assists per game use recorded appearances. Pass and tackle rates use summed successful actions divided by summed attempts. Blank values mean no usable data.")
+            st.subheader("Match ratings over time")
+            chart = both.dropna(subset=["rating", "played_at"]).sort_values("played_at").copy()
+            if chart.empty:
+                st.info("No dated match ratings available for this selection.")
+            else:
+                chart["Player"] = chart["player_id"].map({player_a: str(latest_names[player_a]), player_b: str(latest_names[player_b])})
+                chart["Appearance"] = chart.groupby("player_id").cumcount() + 1
+                st.line_chart(chart.pivot_table(index="Appearance", columns="Player", values="rating", aggfunc="mean"),
+                              y_label="Match rating")
+                st.caption("Appearance numbers are sequential for each player, not necessarily the same fixtures.")
