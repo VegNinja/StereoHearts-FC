@@ -316,7 +316,7 @@ st.markdown("""
 
 # Four main sections; specialised tools are selected within each section.
 tab_snapshot, tab_matches, tab_squad, tab_explorer = st.tabs(
-    ["Cub Overview", "Matches", "Squad", "Data Explorer"]
+    ["Club Overview", "Matches", "Squad", "Data Explorer"]
 )
 
 with tab_snapshot:
