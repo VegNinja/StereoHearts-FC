@@ -246,8 +246,8 @@ else:
     else:
         st.info("Match results are present but none are recognised as wins, draws or losses.")
 
-tab_overview, tab_squad, tab_matches, tab_analytics, tab_players, tab_compare, tab_form, tab_awards, tab_centre, tab_advanced, tab_archive = st.tabs(
-    ["Overview", "Squad", "Matches", "Analytics", "Players", "Compare", "Club form", "Awards", "Match centre", "Advanced", "Raw data"]
+tab_overview, tab_squad, tab_matches, tab_analytics, tab_players, tab_compare, tab_form, tab_awards, tab_centre, tab_advanced, tab_events, tab_archive = st.tabs(
+    ["Overview", "Squad", "Matches", "Analytics", "Players", "Compare", "Club form", "Awards", "Match centre", "Advanced", "Deep stats", "Raw data"]
 )
 
 with tab_overview:
@@ -853,3 +853,71 @@ with tab_advanced:
                 st.subheader("Performance by position")
                 by_position = frame.groupby("position").agg(Appearances=("match_id", "count"), Goals=("goals", "sum"), Assists=("assists", "sum"), Average_rating=("rating", "mean")).reset_index()
                 st.dataframe(by_position.rename(columns={"position": "Position", "Average_rating": "Average rating"}).round(2), use_container_width=True, hide_index=True)
+
+
+# Decoded EA match-event counters are archived inside match_player_stats.raw_data.
+# No schema migration is required; unknown/missing event fields remain blank.
+with tab_events:
+    st.subheader("Deep match-event statistics")
+    st.caption("Community-decoded EA event counters, collected from the latest sync onward. "
+               "These are not xG and may be absent from older archived matches.")
+    event_labels = {
+        "passesCompletedForward": "Forward passes completed",
+        "passesCompleted": "Passes completed (event)",
+        "possessionWonDefensiveThird": "Possession won: defensive third",
+        "possessionWonMiddleThird": "Possession won: middle third",
+        "possessionWonAttackingThird": "Possession won: attacking third",
+        "outOfPosition": "Times out of position",
+    }
+    if all_performances.empty or "raw_data" not in all_performances.columns:
+        st.info("No archived player event data is available yet.")
+    else:
+        event_rows = all_performances.copy()
+        for key in event_labels:
+            event_rows[key] = event_rows["raw_data"].apply(
+                lambda obj: obj.get(key) if isinstance(obj, dict) else None
+            )
+            event_rows[key] = pd.to_numeric(event_rows[key], errors="coerce")
+        present = [key for key in event_labels if event_rows[key].notna().any()]
+        if not present:
+            st.info("No decoded match events are stored yet. Deploy ea_client.py, run a new EA sync, then refresh this page.")
+        else:
+            col1, col2 = st.columns(2)
+            types = sorted(event_rows["match_type"].dropna().astype(str).unique().tolist())
+            positions = sorted(event_rows["position"].dropna().astype(str).unique().tolist())
+            selected_types = col1.multiselect("Match types", types, default=types, key="event_match_types")
+            selected_positions = col2.multiselect("Positions", positions, default=positions, key="event_positions")
+            filtered = event_rows[
+                event_rows["match_type"].isin(selected_types) & event_rows["position"].isin(selected_positions)
+            ].copy()
+            if filtered.empty:
+                st.info("No performances match these filters.")
+            else:
+                available = [k for k in present if filtered[k].notna().any()]
+                if not available:
+                    st.info("No event counters are available for this selection.")
+                else:
+                    metric = st.selectbox("Rank players by", available,
+                        format_func=lambda k: event_labels[k], key="event_metric")
+                    # Preserve missing values as missing rather than silently interpreting them as zero.
+                    grouped = filtered.groupby("player_id", dropna=False)
+                    summary = grouped.agg(Player=("player_name", "last"),
+                                           Appearances=("match_id", "nunique")).reset_index()
+                    for key in available:
+                        values = grouped[key].sum(min_count=1).reset_index(name=key)
+                        summary = summary.merge(values, on="player_id", how="left")
+                    summary = summary.sort_values(metric, ascending=False, na_position="last")
+                    shown = summary[["Player", "Appearances"] + available].rename(columns=event_labels)
+                    st.dataframe(shown, use_container_width=True, hide_index=True)
+                    st.subheader("Player event history")
+                    players = (filtered[["player_id", "player_name"]]
+                               .drop_duplicates("player_id").sort_values("player_name"))
+                    choices = players["player_id"].astype(str).tolist()
+                    labels = dict(zip(players["player_id"].astype(str), players["player_name"].astype(str)))
+                    selected = st.selectbox("Player", choices, format_func=lambda k: labels.get(k, k), key="event_player")
+                    detail = filtered[filtered["player_id"].astype(str) == selected].copy()
+                    columns = ["played_at", "match_type", "position", "rating"] + available
+                    st.dataframe(detail[columns].rename(columns=event_labels).sort_values("played_at", ascending=False),
+                                 use_container_width=True, hide_index=True)
+                    st.caption("Only event types confirmed in the API documentation are shown here. "
+                               "Totals reflect archived appearances, not all-time EA career statistics.")
