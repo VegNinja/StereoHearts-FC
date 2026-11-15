@@ -173,3 +173,28 @@ with tab_archive:
     for key in ["club_details", "overall_stats", "member_stats", "matches", "match_players"]:
         with st.expander(key.replace("_", " ").title()):
             st.json(data.get(key, [] if key.endswith("s") else {}))
+
+
+
+with st.expander("Developer tools — inspect EA data"):
+    st.caption("Inspect the fields returned by the API.")
+
+    for section in [
+        "club_details",
+        "overall_stats",
+        "member_stats",
+        "career_stats",
+        "matches",
+        "match_players",
+    ]:
+        value = data.get(section, [])
+        st.write(f"**{section}**")
+
+        if isinstance(value, list):
+            st.write(f"Stored records: {len(value)}")
+            if value and isinstance(value[0], dict):
+                st.write("Available fields:", list(value[0].keys()))
+                st.json(value[0])
+        elif isinstance(value, dict):
+            st.write("Available fields:", list(value.keys()))
+            st.json(value)
