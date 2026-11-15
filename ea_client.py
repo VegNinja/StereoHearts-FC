@@ -39,7 +39,7 @@ def fetch_club_bundle(club_id: int) -> dict:
     # Do not swallow API errors: a failed category should fail the sync visibly.
     match_players = []
     for match_type in ("leagueMatch", "friendlyMatch", "playoffMatch"):
-        rows = _as_list(api.get_match_players(club_id, match_type=match_type, count=10))
+        rows = _as_list(api.get_match_players(club_id, match_type=match_type, count=10, include_events=True, output="records"))
         match_players.extend(rows)
     return {
         "club_details": details if isinstance(details, dict) else (details[0] if details else {}),
