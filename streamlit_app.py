@@ -320,7 +320,7 @@ tab_snapshot, tab_matches, tab_squad, tab_explorer = st.tabs(
 )
 
 with tab_snapshot:
-        st.subheader("Cub Overview")
+        st.subheader("Club Overview")
         if st.session_state.get("last_sync_count"):
             st.caption(f"Last manual sync processed {st.session_state['last_sync_count']} records.")
         overall_df = records_to_df([overall] if isinstance(overall, dict) else overall)
@@ -505,7 +505,7 @@ with tab_matches:
 
 with tab_squad:
     squad_view = st.selectbox(
-        "Squad section", ["Squad Overview", "Player Breakdown", "Head to Head", "Awards & Rankings"],
+        "Squad section", ["Squad Overview", "Performance Areas", "Player Breakdown", "Head to Head", "Awards & Rankings"],
         key="squad_view", help="Choose the squad statistics to display."
     )
     if squad_view == "Squad Overview":
@@ -607,6 +607,182 @@ with tab_squad:
                     st.dataframe(full_squad, use_container_width=True, hide_index=True, height=430,
                         column_config={"Conversion rate": st.column_config.NumberColumn("Conversion rate", format="%.1f%%")})
                 st.caption("Conversion rate = goals ÷ recorded shots. Possession rates require all three pitch-third event counters for every included appearance; missing values are left blank.")
+    elif squad_view == "Performance Areas":
+        st.subheader("Performance Areas")
+        st.caption("Explore each player's recorded match statistics. Missing event data is never treated as zero.")
+        if all_performances.empty or "player_id" not in all_performances.columns:
+            st.info("No archived player performances are available yet.")
+        else:
+            source = all_performances.sort_values("played_at", na_position="first").copy()
+            names = source.groupby("player_id")["player_name"].last().to_dict()
+            player_ids = sorted(names, key=lambda pid: (str(names[pid]).casefold(), str(pid)))
+            chosen_player = st.selectbox("Player", player_ids,
+                format_func=lambda pid: str(names[pid]), key="areas_player")
+            player_data = source[source["player_id"] == chosen_player].copy()
+            available_positions = sorted(player_data["position"].dropna().unique().tolist())
+            selected_position = st.selectbox("Position", ["All positions"] + available_positions,
+                key="areas_position")
+            if selected_position != "All positions":
+                player_data = player_data[player_data["position"] == selected_position].copy()
+            if "performance_area" not in st.session_state:
+                st.session_state["performance_area"] = "Possession"
+            area_icons = [("Possession", "⚽"), ("Shooting", "🎯"),
+                          ("Passing", "↗"), ("Defending", "🛡")]
+            st.markdown("""<style>
+            div[class*="st-key-performance_area_"] button {
+                width: 64px !important; height: 64px !important;
+                border-radius: 50% !important; padding: 3px !important;
+                border: 2px solid #C8102E !important;
+                font-size: 1.5rem !important; margin: 0 auto !important;
+            }
+            div[class*="st-key-performance_area_"] button[kind="primary"] {
+                background: #C8102E !important; color: white !important;
+            }
+            @media (max-width: 700px) {
+                div[class*="st-key-performance_area_"] button {
+                    width: 56px !important; height: 56px !important;
+                }
+            }
+            </style>""", unsafe_allow_html=True)
+            area_cols = st.columns(4, gap="small")
+            for col, (area_name, symbol) in zip(area_cols, area_icons):
+                with col:
+                    if st.button(symbol, key=f"performance_area_{area_name.lower()}",
+                                 type="primary" if st.session_state["performance_area"] == area_name else "secondary",
+                                 help=area_name, use_container_width=True):
+                        st.session_state["performance_area"] = area_name
+                    st.markdown(f"<div style='text-align:center;font-size:.75rem;font-weight:600'>{area_name}</div>",
+                                unsafe_allow_html=True)
+            area = st.session_state["performance_area"]
+            st.markdown(f"#### {area} breakdown")
+
+            # Flatten only this player's actual archived raw event fields.
+            # Retain the original field keys for auditing and avoid invented counters.
+            raw_values = player_data.get("raw_data", pd.Series([{}] * len(player_data), index=player_data.index))
+            raw_flat = pd.json_normalize(
+                [v if isinstance(v, dict) else {} for v in raw_values], sep="."
+            ).reset_index(drop=True)
+            base = player_data.reset_index(drop=True)
+            numeric_fields = {}
+            for field in ("goals", "assists", "shots", "saves", "passes_made", "pass_attempts",
+                          "tackles_made", "tackle_attempts", "clean_sheet", "red_cards",
+                          "man_of_the_match", "rating", "seconds_played"):
+                if field in base.columns:
+                    numeric_fields[field] = pd.to_numeric(base[field], errors="coerce")
+            for field in raw_flat.columns:
+                # Never include IDs, dates, metadata, percentages already derived by EA,
+                # or unlabelled numerical codes as performance totals.
+                tail = field.rsplit(".", 1)[-1]
+                lower = tail.lower()
+                if (lower.endswith(("id", "timestamp")) or lower in
+                    {"rating", "goals", "assists", "shots", "saves", "position", "matchtype",
+                     "playername", "secondsplayed", "clubid", "playerid", "matchid"}):
+                    continue
+                vals = pd.to_numeric(raw_flat[field], errors="coerce")
+                if vals.notna().any() and (vals.dropna() >= 0).all() and not ("." in field and field.split(".")[0].lower() in ("metadata", "player")):
+                    numeric_fields.setdefault(field, vals)
+
+            def area_for(field):
+                key = field.rsplit(".", 1)[-1].lower().replace("_", "")
+                if any(t in key for t in ("possession", "dispossess", "balllost", "ballwon", "turnover", "recover")):
+                    return "Possession"
+                if any(t in key for t in ("shot", "goal", "finish", "header", "weakfoot", "volley", "penaltyscored")):
+                    return "Shooting"
+                if any(t in key for t in ("pass", "assist", "cross", "throughball", "switchplay", "keyball")):
+                    return "Passing"
+                if any(t in key for t in ("tackle", "intercept", "block", "clearance", "aerial", "duel",
+                                         "save", "cleansheet", "clean_sheet", "marking", "defend", "foul", "redcard")):
+                    return "Defending"
+                return None
+
+            def nice_name(field):
+                tail = field.rsplit(".", 1)[-1]
+                known = {
+                    "passes_made": "Completed passes", "pass_attempts": "Pass attempts",
+                    "tackles_made": "Successful tackles", "tackle_attempts": "Tackle attempts",
+                    "clean_sheet": "Clean sheets", "red_cards": "Red cards",
+                    "possessionWonDefensiveThird": "Possession won — defensive third",
+                    "possessionWonMiddleThird": "Possession won — middle third",
+                    "possessionWonAttackingThird": "Possession won — attacking third",
+                    "possessionLostDefensiveThird": "Possession lost — defensive third",
+                    "possessionLostMiddleThird": "Possession lost — middle third",
+                    "possessionLostAttackingThird": "Possession lost — attacking third",
+                }
+                if tail in known:
+                    return known[tail]
+                spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", tail.replace("_", " "))
+                return spaced[:1].upper() + spaced[1:]
+
+            selected_stats = []
+            for field, values in numeric_fields.items():
+                if area_for(field) != area:
+                    continue
+                coverage = int(values.notna().sum())
+                total_matches = len(values)
+                # No partial totals: otherwise a player with old missing event records
+                # could be presented as having lower totals than they actually do.
+                total = float(values.sum()) if coverage == total_matches and total_matches else None
+                selected_stats.append({"Statistic": nice_name(field), "Total": total,
+                                       "Per game": round(total / total_matches, 2) if total is not None else None,
+                                       "Recorded matches": coverage, "Total matches": total_matches,
+                                       "EA field": field})
+            stats_table = pd.DataFrame(selected_stats)
+            if stats_table.empty:
+                st.info(f"No {area.lower()} counters are present in the selected player's archived records.")
+            else:
+                # Deduplicate names by retaining source keys in the detailed table.
+                def stat_total(key):
+                    matches = stats_table.loc[stats_table["EA field"] == key, "Total"]
+                    return matches.iloc[0] if not matches.empty else None
+                area_kpis = {
+                    "Possession": [("Defensive recoveries", "possessionWonDefensiveThird"),
+                                   ("Midfield recoveries", "possessionWonMiddleThird"),
+                                   ("Attacking recoveries", "possessionWonAttackingThird")],
+                    "Shooting": [("Goals", "goals"), ("Shots", "shots")],
+                    "Passing": [("Completed passes", "passes_made"), ("Assists", "assists")],
+                    "Defending": [("Successful tackles", "tackles_made"), ("Saves", "saves")],
+                }
+                cards = area_kpis[area]
+                for start in range(0, len(cards), 2):
+                    cols = st.columns(2)
+                    for col, (label, key) in zip(cols, cards[start:start + 2]):
+                        val = stat_total(key)
+                        col.metric(label, f"{val:,.0f}" if val is not None and pd.notna(val) else "—")
+                if area == "Shooting":
+                    goals, shots = stat_total("goals"), stat_total("shots")
+                    if goals is not None and shots is not None and shots > 0:
+                        st.metric("Shot conversion", f"{100 * goals / shots:.1f}%")
+                elif area == "Passing":
+                    completed, attempted = stat_total("passes_made"), stat_total("pass_attempts")
+                    if completed is not None and attempted is not None and attempted > 0:
+                        st.metric("Pass accuracy", f"{100 * completed / attempted:.1f}%")
+                elif area == "Defending":
+                    completed, attempted = stat_total("tackles_made"), stat_total("tackle_attempts")
+                    if completed is not None and attempted is not None and attempted > 0:
+                        st.metric("Tackle success", f"{100 * completed / attempted:.1f}%")
+
+                # Chart only complete-coverage counters; do not confuse missing with zero.
+                chart_data = stats_table.dropna(subset=["Total"]).copy()
+                chart_data = chart_data[~chart_data["EA field"].isin(["rating", "seconds_played"])]
+                if not chart_data.empty:
+                    chart_data = chart_data.sort_values("Total", ascending=False).head(8)
+                    plot = alt.Chart(chart_data).mark_bar(color="#C8102E").encode(
+                        x=alt.X("Total:Q", title="Recorded actions"),
+                        y=alt.Y("Statistic:N", sort="-x", title=None),
+                        tooltip=["Statistic:N", alt.Tooltip("Total:Q", format=",.0f")],
+                    ).properties(height=max(180, len(chart_data) * 34))
+                    st.altair_chart(plot, use_container_width=True)
+                st.subheader(f"All {area.lower()} statistics")
+                st.caption("Every recognised numeric counter in this category from the selected player's stored records. "
+                           "Totals and per-game figures are blank when any included match lacks that counter. "
+                           "Swipe the table sideways to inspect source fields and data coverage.")
+                st.dataframe(stats_table.sort_values("Statistic").reset_index(drop=True),
+                             use_container_width=True, hide_index=True, height=460,
+                             column_config={
+                                 "Total": st.column_config.NumberColumn("Total", format="%.1f"),
+                                 "Per game": st.column_config.NumberColumn("Per game", format="%.2f"),
+                                 "EA field": st.column_config.TextColumn("Original EA field"),
+                             })
     elif squad_view == "Player Breakdown":
             st.subheader("StereoHearts FC — player profiles")
             st.caption("Statistics are based on archived match performances, not necessarily full career totals.")
