@@ -32,8 +32,8 @@ def first_existing(df, candidates):
             return name
     return None
 
-st.title("âš½ Pro Clubs â€” Club Dashboard")
-st.caption("FC 27 Â· PlayStation 5 Â· Unofficial community API")
+st.title("StereoHearts FC Club Dashboard")
+st.caption("FC 27 · PlayStation 5 · Unofficial community API")
 
 # This dashboard is permanently pinned to StereoHearts FC.
 CLUB_NAME = "StereoHearts FC"
@@ -132,7 +132,7 @@ with tab_overview:
         result_col = first_existing(match_df, ["result"])
         if result_col:
             form = match_df[result_col].astype(str).str.upper().head(10).tolist()
-            st.write("  Â·  ".join(form) if form else "No match results recorded.")
+            st.write("  ·  ".join(form) if form else "No match results recorded.")
         st.dataframe(match_df.head(10), use_container_width=True, hide_index=True)
     else:
         st.info("No archived matches yet. Use **Sync latest EA data** in the sidebar.")
