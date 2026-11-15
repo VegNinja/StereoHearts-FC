@@ -625,6 +625,18 @@ with tab_squad:
                 key="areas_position")
             if selected_position != "All positions":
                 player_data = player_data[player_data["position"] == selected_position].copy()
+            match_window = st.selectbox(
+                "Match Window", ["All Time", "Last 10", "Last 5", "Last Game"],
+                key="areas_match_window",
+            )
+            # Select the most recent performances for this player and position.
+            # Tie-break on match ID for a stable order when timestamps coincide.
+            if match_window != "All Time":
+                window_size = {"Last 10": 10, "Last 5": 5, "Last Game": 1}[match_window]
+                player_data = (player_data.sort_values(
+                    ["played_at", "match_id"], ascending=[False, False], na_position="last"
+                ).head(window_size).copy())
+            st.caption(f"Showing {len(player_data)} recorded appearance(s) for this selection.")
             if "performance_area" not in st.session_state:
                 st.session_state["performance_area"] = "Possession"
             area_icons = [("Possession", "⚽"), ("Shooting", "🎯"),
