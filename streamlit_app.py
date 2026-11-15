@@ -246,8 +246,8 @@ else:
     else:
         st.info("Match results are present but none are recognised as wins, draws or losses.")
 
-tab_overview, tab_squad, tab_matches, tab_analytics, tab_players, tab_compare, tab_form, tab_awards, tab_centre, tab_advanced, tab_events, tab_archive = st.tabs(
-    ["Overview", "Squad", "Matches", "Analytics", "Players", "Compare", "Club form", "Awards", "Match centre", "Advanced", "Deep stats", "Raw data"]
+tab_overview, tab_squad, tab_matches, tab_analytics, tab_players, tab_compare, tab_form, tab_awards, tab_centre, tab_advanced, tab_events, tab_explorer, tab_archive = st.tabs(
+    ["Overview", "Squad", "Matches", "Analytics", "Players", "Compare", "Club form", "Awards", "Match centre", "Advanced", "Deep stats", "Data explorer", "Raw data"]
 )
 
 with tab_overview:
@@ -854,6 +854,50 @@ with tab_advanced:
                 by_position = frame.groupby("position").agg(Appearances=("match_id", "count"), Goals=("goals", "sum"), Assists=("assists", "sum"), Average_rating=("rating", "mean")).reset_index()
                 st.dataframe(by_position.rename(columns={"position": "Position", "Average_rating": "Average rating"}).round(2), use_container_width=True, hide_index=True)
 
+
+
+with tab_explorer:
+    st.subheader("Complete match statistics explorer")
+    st.caption("Available fields from stored EA player records. Opponents are kept separate from StereoHearts FC totals. Missing values are not treated as zero.")
+    side = st.radio("Players", ["StereoHearts FC", "Opponents"], horizontal=True, key="explorer_side")
+    if side == "StereoHearts FC":
+        explorer = all_performances.copy()
+    else:
+        try:
+            explorer = pd.DataFrame(read_all_rows("opponent_player_stats", CLUB_ID))
+        except Exception as exc:
+            explorer = pd.DataFrame()
+            st.warning(f"Opponent table could not be loaded: {exc}")
+    if explorer.empty or "raw_data" not in explorer.columns:
+        st.info("No stored player records for this selection. Run the new EA sync first.")
+    else:
+        raw_rows = [v if isinstance(v, dict) else {} for v in explorer["raw_data"]]
+        flattened = pd.json_normalize(raw_rows, sep=".")
+        # Use the original row index to avoid mismatched joins.
+        flattened.index = explorer.index
+        all_keys = sorted(flattened.columns.tolist())
+        st.metric("Available stored fields", len(all_keys))
+        search = st.text_input("Search statistic names", key="explorer_search")
+        candidates = [k for k in all_keys if search.lower() in k.lower()]
+        chosen = st.multiselect("Statistics to display", candidates, default=candidates[:min(8, len(candidates))], key="explorer_fields")
+        players = sorted(explorer.get("player_name", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+        positions = sorted(explorer.get("position", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+        c1, c2 = st.columns(2)
+        selected_players = c1.multiselect("Players", players, default=players, key="explorer_players")
+        selected_positions = c2.multiselect("Positions", positions, default=positions, key="explorer_positions")
+        filtered = explorer.loc[
+            explorer["player_name"].astype(str).isin(selected_players)
+            & explorer["position"].astype(str).isin(selected_positions)
+        ]
+        base_cols = [k for k in ("match_id", "player_name", "position") if k in filtered.columns]
+        view = filtered[base_cols].join(flattened[chosen], how="left")
+        st.dataframe(view, use_container_width=True, hide_index=True)
+        st.download_button("Download selected statistics (CSV)", view.to_csv(index=False).encode("utf-8"),
+                           file_name="stereohearts_statistics.csv", mime="text/csv")
+        with st.expander("Every available field name"):
+            st.write(all_keys)
+    with st.expander("Archived full EA responses"):
+        st.caption("Full-column and raw-match snapshots are also archived in club_records. These can be inspected in Supabase or the Raw data tab.")
 
 # Decoded EA match-event counters are archived inside match_player_stats.raw_data.
 # No schema migration is required; unknown/missing event fields remain blank.
