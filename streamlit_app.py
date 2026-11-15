@@ -659,8 +659,25 @@ def _prepared_players():
         if field not in frame:
             frame[field] = float("nan")
         frame[field] = pd.to_numeric(frame[field], errors="coerce")
-    frame["player_name"] = frame["player_name"].fillna("Unknown player").astype(str)
-    frame["position"] = frame["position"].fillna("Unknown").astype(str)
+    for field, default in (("player_name", "Unknown player"), ("position", "Unknown")):
+        if field not in frame.columns:
+            frame[field] = default
+        frame[field] = frame[field].fillna(default).astype(str)
+
+    # Match type belongs to the matches table, not necessarily match_player_stats.
+    # Enrich each performance by its match_id without duplicating player rows.
+    if "match_type" not in frame.columns:
+        frame["match_type"] = pd.NA
+    if "played_at" not in frame.columns:
+        frame["played_at"] = pd.NaT
+    if not all_matches.empty and {"match_id", "match_type"}.issubset(all_matches.columns):
+        lookup = all_matches.drop_duplicates("match_id", keep="last").set_index("match_id")
+        frame["match_type"] = frame["match_type"].fillna(frame["match_id"].map(lookup["match_type"]))
+        if "played_at" in lookup.columns:
+            frame["played_at"] = pd.to_datetime(frame["played_at"], utc=True, errors="coerce").fillna(
+                pd.to_datetime(frame["match_id"].map(lookup["played_at"]), utc=True, errors="coerce")
+            )
+    frame["match_type"] = frame["match_type"].fillna("Unknown").astype(str)
     frame["played_at"] = pd.to_datetime(frame["played_at"], utc=True, errors="coerce")
     return frame
 
