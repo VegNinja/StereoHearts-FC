@@ -298,6 +298,16 @@ if not stored_players.empty and "player_id" in stored_players.columns:
 
 st.markdown("""
 <style>
+/* Keep dashboard KPI pairs, filters and performance buttons in rows on phones. */
+@media (max-width: 700px) {
+  div[data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) { flex-wrap: nowrap !important; gap: .45rem !important; }
+  div[data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) > div[data-testid="stColumn"] { min-width: 0 !important; width: 50% !important; flex: 1 1 50% !important; }
+  div[data-testid="stHorizontalBlock"]:has([class*="st-key-areas_player"]) { flex-wrap: nowrap !important; gap: .35rem !important; }
+  div[data-testid="stHorizontalBlock"]:has([class*="st-key-areas_player"]) > div[data-testid="stColumn"] { min-width: 0 !important; flex: 1 1 33% !important; }
+  div[data-testid="stHorizontalBlock"]:has([class*="st-key-performance_area_"]) { flex-wrap: nowrap !important; gap: .2rem !important; }
+  div[data-testid="stHorizontalBlock"]:has([class*="st-key-performance_area_"]) > div[data-testid="stColumn"] { min-width: 0 !important; flex: 1 1 25% !important; }
+  div[class*="st-key-performance_area_"] button { width: 46px !important; height: 46px !important; }
+}
 /* Four navigation tabs remain readable on a narrow phone. */
 @media (max-width: 700px) {
   .block-container { padding: .65rem .65rem 2rem !important; }
@@ -316,8 +326,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Four main sections; specialised tools are selected within each section.
-tab_snapshot, tab_matches, tab_squad, tab_explorer = st.tabs(
-    ["Club Overview", "Matches", "Squad", "Data Explorer"]
+tab_snapshot, tab_matches, tab_squad, tab_explorer, tab_fun = st.tabs(
+    ["Club Overview", "Matches", "Squad", "Data Explorer", "Fun Stats"]
 )
 
 with tab_snapshot:
@@ -338,7 +348,7 @@ with tab_snapshot:
             ("Skill rating", get_value(overall_df, ["skillRating", "rating"])),
         ]
         for idx in range(0, len(snapshot_metrics), 2):
-            left, right = st.columns(2)
+            left, right = st.columns(2, gap="small")
             for col, (label, value) in zip((left, right), snapshot_metrics[idx:idx + 2]):
                 col.metric(label, value)
 
@@ -371,7 +381,7 @@ with tab_snapshot:
                 # A centre label remains readable on narrow screens; percentages
                 # are placed inside their respective coloured segments.
                 centre = alt.Chart(pd.DataFrame({"text": [f"{counted}\nrecorded"]})).mark_text(
-                    align="center", baseline="middle", fontSize=17, fontWeight="bold", lineBreak="\n"
+                    align="center", baseline="middle", fontSize=17, fontWeight="bold", lineBreak="\n", color="white"
                 ).encode(text="text:N")
                 result_counts["Pct label"] = result_counts["Percentage"].map(lambda x: f"{x:.0f}%")
                 pct_labels = alt.Chart(result_counts[result_counts["Matches"] > 0]).mark_text(
@@ -617,18 +627,22 @@ with tab_squad:
             source = all_performances.sort_values("played_at", na_position="first").copy()
             names = source.groupby("player_id")["player_name"].last().to_dict()
             player_ids = sorted(names, key=lambda pid: (str(names[pid]).casefold(), str(pid)))
-            chosen_player = st.selectbox("Player", player_ids,
-                format_func=lambda pid: str(names[pid]), key="areas_player")
+            filter_player, filter_position, filter_window = st.columns(3, gap="small")
+            with filter_player:
+                chosen_player = st.selectbox("Player", player_ids,
+                    format_func=lambda pid: str(names[pid]), key="areas_player")
             player_data = source[source["player_id"] == chosen_player].copy()
             available_positions = sorted(player_data["position"].dropna().unique().tolist())
-            selected_position = st.selectbox("Position", ["All positions"] + available_positions,
-                key="areas_position")
+            with filter_position:
+                selected_position = st.selectbox("Position", ["All positions"] + available_positions,
+                    key="areas_position")
             if selected_position != "All positions":
                 player_data = player_data[player_data["position"] == selected_position].copy()
-            match_window = st.selectbox(
-                "Match Window", ["All Time", "Last 10", "Last 5", "Last Game"],
-                key="areas_match_window",
-            )
+            with filter_window:
+                match_window = st.selectbox(
+                    "Match Window", ["All Time", "Last 10", "Last 5", "Last Game"],
+                    key="areas_match_window",
+                )
             # Select the most recent performances for this player and position.
             # Tie-break on match ID for a stable order when timestamps coincide.
             if match_window != "All Time":
@@ -1289,3 +1303,113 @@ with tab_explorer:
 
 
         # Structured analytics are loaded independently of the raw EA snapshot archive.
+
+
+# Fun Stats: genuine awards are computed only from complete relevant archived values.
+# Fixed awards are intentionally jokes and never presented as computed results.
+with tab_fun:
+    st.subheader("Fun Stats")
+    st.caption("Eight data-driven awards and four deliberately fixed club in-jokes. Missing EA counters never count as zero.")
+    genuine = []
+    def add_award(name, winner=None, detail="Insufficient reliable archived data", score=None):
+        genuine.append((name, winner or "Not available", detail, score))
+
+    perf = all_performances.copy()
+    if not perf.empty and not all_matches.empty:
+        perf = perf.merge(all_matches[["match_id", "result_label"]].drop_duplicates("match_id"), on="match_id", how="left", suffixes=("", "_club"))
+    def winner_from(series, highest=True):
+        series = series.dropna().sort_values(ascending=not highest)
+        if series.empty:
+            return None, None
+        pid = series.index[0]
+        subset = perf[perf["player_id"] == pid]
+        name = str(subset.sort_values("played_at")["player_name"].iloc[-1]) if not subset.empty else str(pid)
+        return name, float(series.iloc[0])
+
+    if not perf.empty:
+        # Share of team goal involvements in each appearance, not club-wide career totals.
+        if {"goals", "assists", "match_id"}.issubset(perf.columns):
+            valid = perf.dropna(subset=["goals", "assists"]).copy()
+            complete_ids = valid.groupby("match_id").size()
+            total_ids = perf.groupby("match_id").size()
+            valid = valid[valid["match_id"].isin(complete_ids[complete_ids == total_ids].index)]
+            if not valid.empty:
+                valid["contribution"] = valid["goals"] + valid["assists"]
+                totals = valid.groupby("match_id")["contribution"].transform("sum")
+                valid = valid[totals > 0].copy()
+                if not valid.empty:
+                    valid["share"] = valid["contribution"] / valid.groupby("match_id")["contribution"].transform("sum")
+                    groups = valid.groupby("player_id")["share"]
+                    scores = groups.mean()[groups.size() >= 5]
+                    name, score = winner_from(scores)
+                    add_award("Main Character Syndrome", name, "Average share of recorded team goal involvements (minimum five qualifying games)", f"{score:.1%}" if score is not None else None)
+                else: add_award("Main Character Syndrome")
+            else: add_award("Main Character Syndrome")
+        else: add_award("Main Character Syndrome")
+        if {"shots", "goals"}.issubset(perf.columns):
+            valid = perf.dropna(subset=["shots", "goals"])
+            grouped = valid.groupby("player_id")[["shots", "goals"]].sum()
+            eligible = grouped[grouped["shots"] >= 15]
+            scores = eligible["goals"] / eligible["shots"] if not eligible.empty else pd.Series(dtype=float)
+            name, score = winner_from(scores, highest=False)
+            add_award("Stormtrooper Award", name, "Lowest goals-per-shot conversion; minimum 15 recorded shots", f"{score:.1%}" if score is not None else None)
+        else: add_award("Stormtrooper Award")
+        valid = perf.dropna(subset=["rating", "played_at"]).sort_values(["played_at", "match_id"])
+        changes = {}
+        for pid, group in valid.groupby("player_id"):
+            if len(group) >= 10:
+                changes[pid] = group["rating"].iloc[-5:].mean() - group["rating"].iloc[-10:-5].mean()
+        name, score = winner_from(pd.Series(changes, dtype=float))
+        add_award("Purple Patch", name, "Largest improvement in average rating: last five versus previous five games", f"+{score:.2f}" if score is not None else None)
+        raw = perf.get("raw_data", pd.Series([{}] * len(perf), index=perf.index))
+        lost = raw.apply(lambda v: event_counter(v, ["possessionLostDefensiveThird"])) + raw.apply(lambda v: event_counter(v, ["possessionLostMiddleThird"])) + raw.apply(lambda v: event_counter(v, ["possessionLostAttackingThird"]))
+        losses = perf[["player_id"]].copy(); losses["lost"] = lost
+        groups = losses.dropna().groupby("player_id")["lost"]
+        scores = groups.mean()[groups.size() >= 5] if not losses.dropna().empty else pd.Series(dtype=float)
+        name, score = winner_from(scores)
+        add_award("The Black Hole", name, "Most recorded possession losses per appearance; minimum five complete appearances", f"{score:.2f}/game" if score is not None else None)
+        # Do not invent weights for an agreed weighted score without a verified formula.
+        add_award("The Liability", detail="Requires agreed Chaos Score weights and reliable foul, penalty and red-card counters")
+        if "result_label" in perf.columns:
+            match_results = perf.dropna(subset=["result_label"]).copy()
+            appearances = match_results.groupby("player_id")["match_id"].nunique()
+            win_rate = match_results.assign(win=match_results["result_label"].eq("W").astype(float)).groupby("player_id")["win"].mean()
+            name, score = winner_from(win_rate[appearances >= 5], highest=False)
+            add_award("The Curse", name, "Lowest club win percentage when appearing; minimum five games", f"{score:.1%}" if score is not None else None)
+            from itertools import combinations
+            pair_results = {}
+            for match_id, group in match_results.groupby("match_id"):
+                for a, b in combinations(sorted(group["player_id"].unique()), 2):
+                    pair_results.setdefault((a, b), []).append(group["result_label"].iloc[0] == "W")
+            eligible_pairs = [(pair, sum(wins)/len(wins), len(wins)) for pair, wins in pair_results.items() if len(wins) >= 10]
+            if eligible_pairs:
+                pair, score, games = sorted(eligible_pairs, key=lambda r: (-r[1], -r[2], r[0]))[0]
+                def pname(pid):
+                    return str(perf[perf["player_id"] == pid].sort_values("played_at")["player_name"].iloc[-1])
+                add_award("Dynamic Duo", f"{pname(pair[0])} & {pname(pair[1])}", f"Best shared win percentage across {games} matches; minimum ten together", f"{score:.1%}")
+            else: add_award("Dynamic Duo")
+        else:
+            add_award("The Curse"); add_award("Dynamic Duo")
+    else:
+        for label in ("Main Character Syndrome", "Stormtrooper Award", "Purple Patch", "The Black Hole", "The Liability", "The Curse", "Dynamic Duo"):
+            add_award(label)
+    # First-time goal is not safely inferable from the standard goals counter.
+    add_award("Tap-in Merchant", detail="Requires a verified first-time-goal indicator and at least ten total goals")
+    ordered = {name: (name, winner, detail, score) for name, winner, detail, score in genuine}
+    order = ["Main Character Syndrome", "Stormtrooper Award", "Purple Patch", "The Black Hole", "The Liability", "Tap-in Merchant", "Dynamic Duo", "The Curse"]
+    awards = [ordered[name] for name in order]
+    awards += [
+        ("The Tactical Genius", "VegNinja", "Fixed club in-joke — not a calculated award", None),
+        ("False Nine-to-Five", "DYLDESTRUCT", "Fixed club in-joke — not a calculated award", None),
+        ("Ratings Farmer", "Seannn2", "Fixed club in-joke — not a calculated award", None),
+        ("The Architect", "VegNinja", "Highest weighted creative contribution, combining assists, secondary assists and key passes. Fixed club in-joke — not calculated.", None),
+    ]
+    for start in range(0, 12, 3):
+        cols = st.columns(3, gap="small")
+        for col, (name, winner, detail, score) in zip(cols, awards[start:start+3]):
+            with col:
+                with st.container(border=True):
+                    st.markdown(f"**{name}**")
+                    st.markdown(f"### {winner}")
+                    if score is not None: st.caption(f"Result: {score}")
+                    st.caption(detail)
