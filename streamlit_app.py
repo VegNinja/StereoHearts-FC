@@ -92,6 +92,26 @@ h1 {font-weight: 800 !important;}
  .sh-club-kpis{gap:5px;} .sh-club-kpi{padding:9px 2px;}
  .sh-club-kpi strong{font-size:1rem;} .sh-club-kpi small{font-size:.54rem;}
  .sh-form-result{min-width:0;padding:5px 3px;}}
+
+/* Player choice areas retain horizontal alignment on small screens. */
+.st-key-compare_player_picker [data-testid="stHorizontalBlock"] {
+  display:flex !important; flex-direction:row !important; flex-wrap:wrap !important;
+  align-items:flex-start; gap:4px 10px !important;
+}
+.st-key-compare_player_picker [data-testid="column"] {
+  flex:0 1 calc(20% - 9px) !important; min-width:120px !important; width:auto !important;
+}
+.st-key-h2h_player_picker [data-testid="stHorizontalBlock"] {
+  display:flex !important; flex-direction:row !important; flex-wrap:nowrap !important;
+  align-items:flex-start; gap:12px !important;
+}
+.st-key-h2h_player_picker [data-testid="column"] {
+  flex:1 1 0 !important; min-width:0 !important; width:50% !important;
+}
+.st-key-h2h_player_picker [data-testid="stSelectbox"] {min-width:0 !important;}
+@media (max-width:700px) {
+  .st-key-compare_player_picker [data-testid="column"] {flex:1 1 calc(50% - 10px) !important;}
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -817,13 +837,15 @@ with tab_squad:
             player_ids = sorted(latest, key=lambda pid: (str(latest[pid]).casefold(), str(pid)))
             st.markdown("**Players**")
             selected_ids = []
-            # Streamlit checkboxes remain selectable individually on mobile.
-            for start in range(0, len(player_ids), 5):
-                columns = st.columns(min(5, len(player_ids) - start))
-                for column, pid in zip(columns, player_ids[start:start + 5]):
-                    with column:
-                        if st.checkbox(str(latest[pid]), value=(pid in player_ids[:2]), key=f"compare_player_{pid}"):
-                            selected_ids.append(pid)
+            # The keyed group gets a responsive flex layout: horizontal checkbox rows
+            # even on mobile, instead of Streamlit's vertically stacked columns.
+            with st.container(key="compare_player_picker"):
+                for start in range(0, len(player_ids), 5):
+                    columns = st.columns(min(5, len(player_ids) - start))
+                    for column, pid in zip(columns, player_ids[start:start + 5]):
+                        with column:
+                            if st.checkbox(str(latest[pid]), value=(pid in player_ids[:2]), key=f"compare_player_{pid}"):
+                                selected_ids.append(pid)
             left, right = st.columns(2)
             with left:
                 window = st.selectbox("Window", ["All time", "Last 10", "Last 5", "Last 3", "Last 1"], key="compare_window")
@@ -874,12 +896,15 @@ with tab_squad:
                     # Per-axis normalisation preserves comparisons between unlike units.
                     maxima = [max((values[i] for _, _, values in data if values[i] is not None), default=0)
                               for i in range(len(labels))]
+                    # Conversion is a true percentage: 100% fills the radar axis,
+                    # regardless of the highest rate in the selected squad.
+                    maxima[2] = 100.0
                     palette = ["#e63946", "#3b82f6", "#22c55e", "#eab308", "#a855f7", "#06b6d4", "#f97316", "#ec4899"]
                     rows = []
                     for index, (player, apps, values) in enumerate(data):
                         for axis, (label, value) in enumerate(zip(labels, values)):
                             if value is not None:
-                                radius = value/maxima[axis] if maxima[axis] else 0
+                                radius = min(1.0, max(0.0, value/maxima[axis])) if maxima[axis] else 0
                                 angle = 2*math.pi*axis/len(labels) - math.pi/2
                                 rows.append({"Player":player,"Axis":axis,"Metric":label,"Value":value,
                                              "x":radius*math.cos(angle),"y":radius*math.sin(angle),"Colour":palette[index%len(palette)]})
@@ -948,10 +973,11 @@ with tab_squad:
                 pool["result_label"] = pd.NA
             names = pool.groupby("player_id")["player_name"].last().to_dict()
             ids = sorted(names, key=lambda pid: str(names[pid]).casefold())
-            a_col,b_col = st.columns(2)
-            first = a_col.selectbox("Player A",ids,key="h2h_a",format_func=lambda p:str(names[p]))
-            choices = [p for p in ids if p != first]
-            second = b_col.selectbox("Player B",choices,key="h2h_b",format_func=lambda p:str(names[p]))
+            with st.container(key="h2h_player_picker"):
+                a_col,b_col = st.columns(2)
+                first = a_col.selectbox("Player A",ids,key="h2h_a",format_func=lambda p:str(names[p]))
+                choices = [p for p in ids if p != first]
+                second = b_col.selectbox("Player B",choices,key="h2h_b",format_func=lambda p:str(names[p]))
             window = st.segmented_control("Comparison window",["All time","Last 10","Last 5"],default="All time",key="h2h_window")
             selected = []
             for pid in (first,second):
@@ -982,48 +1008,85 @@ with tab_squad:
                    ("Pass completion",_pass,"%"),
                    ("Average match rating",_rating,"rating"),
                    ("Win rate",_win,"%")]
-            st.markdown(f"### {html.escape(str(names[first]))}  ⚔️  {html.escape(str(names[second]))}")
-            x,y=st.columns(2)
-            x.metric(f"{names[first]} · appearances",len(selected[0]))
-            y.metric(f"{names[second]} · appearances",len(selected[1]))
-            st.markdown("##### The statistical battle")
-            winscore=[0,0]; known=0
-            for label,fn,unit in stats:
-                values=[fn(g) for g in selected]
-                st.markdown(f"**{label}**")
-                if any(v is None for v in values):
-                    st.caption(" · ".join(f"{names[pid]}: {v:.2f}{'%' if unit=='%' else ''}" if v is not None else f"{names[pid]}: unavailable" for pid,v in zip((first,second),values)))
-                    continue
-                known+=1
-                if abs(values[0]-values[1])>1e-8:
-                    winscore[0 if values[0]>values[1] else 1]+=1
-                maxval=max(values) or 1
-                # Values and proportional bars give a quick visual winner without hiding actual figures.
-                left,right=st.columns(2)
-                for col,v,pid,colour in zip((left,right),values,(first,second),("#C8102E","#3979c8")):
-                    col.markdown(f"<div style='font-weight:700'>{v:.1f}{'%' if unit=='%' else ''}</div>"
-                                 f"<div style='height:9px;background:#5555;border-radius:9px;overflow:hidden'>"
-                                 f"<div style='height:9px;width:{100*v/maxval:.2f}%;background:{colour}'></div></div>",
-                                 unsafe_allow_html=True)
-            if known:
-                st.markdown(f"**Category wins:** {html.escape(str(names[first]))} {winscore[0]} – {winscore[1]} {html.escape(str(names[second]))}")
-                st.caption(f"Across {known} comparable measures. This is not an official EA rating; all categories are weighted equally.")
-            st.markdown("##### Recent attacking form")
-            trends=[]
-            for pid,games in zip((first,second),selected):
-                chronological=games.sort_values(["played_at","match_id"])
-                if chronological["goals"].notna().all() and chronological["assists"].notna().all():
-                    for i,(_,game) in enumerate(chronological.iterrows(),1):
-                        trends.append({"Appearance":i,"Player":str(names[pid]),"Goal contributions":float(game["goals"]+game["assists"])})
-            if trends:
-                df=pd.DataFrame(trends)
-                st.altair_chart(alt.Chart(df).mark_line(point=True).encode(
-                    x=alt.X("Appearance:Q",axis=alt.Axis(tickMinStep=1,format="d")),
-                    y=alt.Y("Goal contributions:Q",axis=alt.Axis(tickMinStep=1,format="d")),
-                    color="Player:N",tooltip=["Player:N","Appearance:Q","Goal contributions:Q"]
-                ).properties(height=260),use_container_width=True)
-            else:
-                st.caption("Recent form needs complete goal and assist records for the selected window.")
+            # Centre the entire comparison panel with breathing room at each side.
+            gutter_l, centre, gutter_r = st.columns([1, 7, 1])
+            with centre:
+                st.markdown(
+                    f'<h3 style="text-align:center; margin:10px 0 18px">'
+                    f'{html.escape(str(names[first]))} &nbsp; ⚔️ &nbsp; '
+                    f'{html.escape(str(names[second]))}</h3>',
+                    unsafe_allow_html=True,
+                )
+                a_stats,b_stats = st.columns(2)
+                a_stats.metric(f"{names[first]} · appearances",len(selected[0]))
+                b_stats.metric(f"{names[second]} · appearances",len(selected[1]))
+                st.markdown("#### The statistical battle")
+                st.caption("Each metric is plotted vertically from a shared zero line. "
+                           "Red extends downward for Player A and blue upward for Player B; "
+                           "bar lengths are normalised within each category, with real values on the bars.")
+                battle_rows=[]
+                unavailable=[]
+                winscore=[0,0]
+                known=0
+                for order,(label,fn,unit) in enumerate(stats):
+                    values=[fn(g) for g in selected]
+                    if any(v is None for v in values):
+                        unavailable.append(label)
+                        continue
+                    known+=1
+                    delta=values[0]-values[1]
+                    winner=0 if delta>1e-8 else (1 if delta< -1e-8 else None)
+                    if winner is not None:
+                        winscore[winner]+=1
+                    maximum=max(abs(v) for v in values) or 1.0
+                    for index,(pid,value) in enumerate(zip((first,second),values)):
+                        # Signed height is *only* for presentation. Actual measured values
+                        # stay visible as labels and tooltips, not converted into scores.
+                        normalised=min(1.0,abs(value)/maximum)*(1 if index else -1)
+                        display=f"{value:.1f}{'%' if unit=='%' else ''}"
+                        verdict="✓" if winner==index else ("✕" if winner is not None else "=")
+                        battle_rows.append({
+                            "Category":label,"Order":order,"Player":str(names[pid]),
+                            "Side": "Player A" if index==0 else "Player B",
+                            "Height":normalised,"Actual":value,
+                            "Display":f"{verdict} {display}",
+                        })
+                if battle_rows:
+                    battle=pd.DataFrame(battle_rows)
+                    # Domain sorts metrics by their intended order, never alphabetically.
+                    order=[label for label,_,_ in stats if label not in unavailable]
+                    encoding={
+                        "x":alt.X("Category:N",sort=order,title=None,
+                                  axis=alt.Axis(labelAngle=-30,labelLimit=155,labelFontSize=11)),
+                        "y":alt.Y("Height:Q",scale=alt.Scale(domain=[-1.37,1.37]),
+                                  axis=alt.Axis(labels=False,ticks=False,domain=False,title=None)),
+                    }
+                    bars=alt.Chart(battle).mark_bar(size=36,cornerRadiusTopLeft=4,cornerRadiusTopRight=4).encode(
+                        **encoding,
+                        color=alt.Color("Side:N",scale=alt.Scale(domain=["Player A","Player B"],
+                            range=["#C8102E","#3989DB"]),legend=alt.Legend(title=None,orient="bottom")),
+                        tooltip=["Player:N","Category:N",alt.Tooltip("Actual:Q",format=".2f")]
+                    )
+                    # Tick/cross is printed beside the real value on the winning/losing side.
+                    labels_top=alt.Chart(battle[battle["Height"]>=0]).mark_text(
+                        dy=-12,fontSize=12,fontWeight="bold",color="#3989DB").encode(
+                            **encoding,text="Display:N")
+                    labels_bottom=alt.Chart(battle[battle["Height"]<0]).mark_text(
+                        dy=13,fontSize=12,fontWeight="bold",color="#C8102E").encode(
+                            **encoding,text="Display:N")
+                    baseline=alt.Chart(pd.DataFrame({"zero":[0]})).mark_rule(
+                        strokeWidth=1.5,color="#8c929c").encode(y="zero:Q")
+                    st.altair_chart((bars+baseline+labels_top+labels_bottom).properties(
+                        height=420,padding={"top":17,"bottom":10}),use_container_width=True)
+                    first_col,second_col=st.columns(2)
+                    first_col.markdown(f"**{html.escape(str(names[first]))}: {winscore[0]} category wins**")
+                    second_col.markdown(f"**{html.escape(str(names[second]))}: {winscore[1]} category wins**")
+                    st.caption(f"{known} comparable categories · ✓ category winner · ✕ category loser · "
+                               "= tied · Categories weighted equally. Not an official EA rating.")
+                if unavailable:
+                    st.caption("Unavailable comparisons (incomplete recorded data): " + ", ".join(unavailable))
+                if not battle_rows:
+                    st.info("No metrics have complete data for both selected players.")
     elif squad_view == "Performance Areas":
         st.subheader("Performance Areas")
         st.caption("Explore each player's recorded match statistics. Missing event data is never treated as zero.")
@@ -1649,7 +1712,7 @@ with tab_analytics:
 
 # Fun Stats: genuine awards are computed only from complete relevant archived values.
 # Fixed awards are intentionally jokes and never presented as computed results.
-st.markdown('\\n<style>\n.sh-award-card {box-shadow:0 5px 16px rgba(0,0,0,.10);transition:transform .15s ease;}\n.sh-award-card:hover {transform:translateY(-2px);}\n.sh-award-winner {letter-spacing:-.02em;}\n@media (max-width:700px) {.sh-awards-grid {gap:9px!important;}}\n</style>\n', unsafe_allow_html=True)
+st.markdown('<style>\n.sh-award-card {box-shadow:0 5px 16px rgba(0,0,0,.10);transition:transform .15s ease;}\n.sh-award-card:hover {transform:translateY(-2px);}\n.sh-award-winner {letter-spacing:-.02em;}\n@media (max-width:700px) {.sh-awards-grid {gap:9px!important;}}\n</style>\n', unsafe_allow_html=True)
 
 with tab_fun:
     st.subheader("Fun Stats")
