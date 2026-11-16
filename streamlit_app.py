@@ -431,6 +431,9 @@ with tab_snapshot:
           </div>
           <div class="sh-form-strip">{badges}</div>
         </div>'''
+        # Streamlit treats indented HTML lines as a Markdown code block.
+        # Strip indentation from every HTML line before rendering.
+        header_markup = "\n".join(line.lstrip() for line in header_markup.splitlines())
         st.markdown(header_markup, unsafe_allow_html=True)
         st.subheader("Club Overview")
 
