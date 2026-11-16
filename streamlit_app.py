@@ -2,6 +2,7 @@ import json
 import base64
 import html
 import re
+import hashlib
 import streamlit as st
 import pandas as pd
 import altair as alt
@@ -93,6 +94,9 @@ h1 {font-weight: 800 !important;}
  .sh-club-kpi strong{font-size:1rem;} .sh-club-kpi small{font-size:.54rem;}
  .sh-form-result{min-width:0;padding:5px 3px;}}
 
+/* A native multi-selection pill widget wraps horizontally across widths. */
+.st-key-compare_players_pills [data-testid="stPills"] { width:100%; }
+.st-key-compare_players_pills [role="group"] { display:flex!important; flex-flow:row wrap!important; gap:7px!important; }
 /* Player choice areas retain horizontal alignment on small screens. */
 .st-key-compare_player_picker [data-testid="stHorizontalBlock"] {
   display:flex !important; flex-direction:row !important; flex-wrap:wrap !important;
@@ -516,6 +520,55 @@ header_markup = f'''<div class="sh-club-panel">
 header_markup = "\n".join(line.lstrip() for line in header_markup.splitlines())
 st.markdown(header_markup, unsafe_allow_html=True)
 
+# Division Journey: source fields must be identified as CURRENT, not best-ever.
+def _division_source(keys):
+    for src in (overall, club):
+        if not isinstance(src, dict):
+            continue
+        for key in keys:
+            value = src.get(key)
+            if value is not None and str(value).strip():
+                return value
+    return None
+
+current_div = _division_source(("currentDivision", "currentDiv", "divisionCurrent", "current_division"))
+season_promos = _division_source(("seasonPromotions", "promotionsThisSeason", "currentSeasonPromotions"))
+season_relegs = _division_source(("seasonRelegations", "relegationsThisSeason", "currentSeasonRelegations"))
+# An EA division emblem may be added after a validated asset source is found.
+# Never render arbitrary third-party image URLs as authentic official badges.
+def _div_num(value):
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+current_div_num = _div_num(current_div)
+progress_items = [(5,"5"),(4,"4"),(3,"3"),(2,"2"),(1,"1"),(0,"Elite")]
+progress_html = ''.join(
+    f'<div class="sh-div-item {"sh-div-active" if current_div_num == number else ""}"><strong>{label}</strong><small>{"Elite" if number == 0 else "Div " + label}</small></div>'
+    for number, label in progress_items
+)
+season_value = lambda v: str(int(float(v))) if _number(v) is not None and float(v) >= 0 else "—"
+st.markdown('''<style>
+.sh-division-panel{border:1px solid rgba(125,125,130,.3);border-radius:13px;padding:15px 17px;margin:0 0 19px;background:rgba(100,100,100,.065)}
+.sh-division-top{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center;margin-bottom:12px}
+.sh-division-title{font-weight:800;font-size:1rem}
+.sh-div-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+.sh-div-item{padding:9px 2px;text-align:center;border-radius:8px;background:rgba(115,115,120,.11);border:1px solid rgba(110,110,110,.2)}
+.sh-div-item strong{display:block;font-size:1.2rem}.sh-div-item small{opacity:.72;font-size:.65rem}
+.sh-div-active{background:#9b1c2e;color:white;border:2px solid #eaa355}
+.sh-div-active small{opacity:1}.sh-season-row{display:flex;gap:18px;font-size:.86rem;margin-top:11px;flex-wrap:wrap}
+@media(max-width:560px){.sh-div-grid{gap:3px}.sh-div-item{padding:7px 1px}.sh-div-item strong{font-size:1rem}.sh-div-item small{font-size:.56rem}}
+</style>''', unsafe_allow_html=True)
+st.markdown(f'''<section class="sh-division-panel">
+<div class="sh-division-top"><span class="sh-division-title">🏆 Division Progress</span><span>Current: <b>{'Elite' if current_div_num==0 else 'Division '+str(current_div_num) if current_div_num in (1,2,3,4,5) else 'Not available from current EA snapshot'}</b></span></div>
+<div class="sh-div-grid">{progress_html}</div>
+<div class="sh-season-row"><span>🟢 Season promotions: <b>{season_value(season_promos)}</b></span><span>🔴 Season relegations: <b>{season_value(season_relegs)}</b></span></div>
+</section>''', unsafe_allow_html=True)
+if season_promos is None or season_relegs is None:
+    st.caption("Season promotion/relegation totals are unavailable from the current stored EA fields; lifetime totals are intentionally not substituted.")
+
+
 # Four consolidated sections. All EA/Supabase sync and raw-data tools remain available.
 tab_snapshot, tab_squad, tab_analytics, tab_fun = st.tabs(
     ["Club Overview", "Squad", "Analytics", "Fun Stats"]
@@ -666,6 +719,29 @@ with tab_snapshot:
 
     st.divider()
     st.subheader("What the numbers say")
+    # Qualify on the latest consecutive appearances in one unchanged position.
+    # Three falls need four rated games, three sub-7 ratings need three games.
+    personnel_warnings=[]
+    if not all_performances.empty:
+        for pid, group in all_performances.groupby("player_id"):
+            ordered=group.sort_values(["played_at","match_id"],na_position="first")
+            if len(ordered)<3 or ordered["played_at"].isna().all():
+                continue
+            last3=ordered.tail(3)
+            ratings3=pd.to_numeric(last3["rating"],errors="coerce")
+            same3=last3["position"].notna().all() and last3["position"].nunique()==1
+            poor=same3 and ratings3.notna().all() and (ratings3<7.0).all()
+            last4=ordered.tail(4)
+            ratings4=pd.to_numeric(last4["rating"],errors="coerce")
+            same4=len(last4)==4 and last4["position"].notna().all() and last4["position"].nunique()==1
+            declines=same4 and ratings4.notna().all() and all(ratings4.iloc[i]<ratings4.iloc[i-1] for i in (1,2,3))
+            if poor or declines:
+                chosen=last4 if declines else last3
+                label="three successive rating drops" if declines else "three ratings below 7.0"
+                rates=" → ".join(f"{v:.1f}" for v in pd.to_numeric(chosen["rating"]))
+                personnel_warnings.append((sh_player_name(all_performances,pid),str(chosen["position"].iloc[-1]),label,rates))
+    for name,pos,trigger,rates in personnel_warnings:
+        st.warning(f"Personnel change required ⚠️ — {name} ({pos}): {trigger} · {rates}")
     if not all_matches.empty:
         completed = all_matches.dropna(subset=["result_label"]).sort_values("played_at").copy()
         if len(completed) >= 10:
@@ -841,16 +917,20 @@ with tab_squad:
             latest = frame.groupby("player_id")["player_name"].first().to_dict()
             player_ids = sorted(latest, key=lambda pid: (str(latest[pid]).casefold(), str(pid)))
             st.markdown("**Players**")
-            selected_ids = []
-            # The keyed group gets a responsive flex layout: horizontal checkbox rows
-            # even on mobile, instead of Streamlit's vertically stacked columns.
-            with st.container(key="compare_player_picker"):
-                for start in range(0, len(player_ids), 5):
-                    columns = st.columns(min(5, len(player_ids) - start))
-                    for column, pid in zip(columns, player_ids[start:start + 5]):
-                        with column:
-                            if st.checkbox(str(latest[pid]), value=(pid in player_ids[:2]), key=f"compare_player_{pid}"):
-                                selected_ids.append(pid)
+            # Native multi-choice pills are always a horizontal, wrapping row rather than
+            # child columns that Streamlit collapses into a vertical stack on mobile.
+            player_label_map = {pid: f"{latest[pid]}" for pid in player_ids}
+            if hasattr(st, "pills"):
+                selected_ids = st.pills(
+                    "Compare players", player_ids, selection_mode="multi",
+                    default=player_ids[:2], format_func=lambda pid: player_label_map[pid],
+                    key="compare_players_pills", label_visibility="collapsed"
+                ) or []
+            else:
+                selected_ids = st.multiselect(
+                    "Players to compare", player_ids, default=player_ids[:2],
+                    format_func=lambda pid: player_label_map[pid], key="compare_players_multiselect"
+                )
             left, right = st.columns(2)
             with left:
                 window = st.selectbox("Window", ["All time", "Last 10", "Last 5", "Last 3", "Last 1"], key="compare_window")
@@ -1266,7 +1346,62 @@ with tab_squad:
                     cards += [("Tackle success (%)", None), ("Tackles / appearance", "tackles_made")]
                 if len(cards) == 3:
                     cards.append(("Actions per appearance", None))
+                # Match the selected player's position/window when producing squad
+                # averages. Each qualifying squad member gets equal weight.
+                def _peer_field(group, field):
+                    if field in group.columns:
+                        vals=pd.to_numeric(group[field],errors="coerce")
+                    elif "raw_data" in group.columns:
+                        vals=group["raw_data"].apply(lambda raw:event_counter(raw,(field,)))
+                    else:
+                        return None
+                    if vals.empty or vals.isna().any():
+                        return None
+                    return float(vals.sum()),len(vals)
+                def _peer_ratio(group,top,bottom):
+                    a=_peer_field(group,top); b=_peer_field(group,bottom)
+                    if a is None or b is None or b[0]<=0:
+                        return None
+                    return 100*a[0]/b[0]
+                def _bench_value(label,key):
+                    peer_data=all_performances.copy()
+                    if selected_position!="All positions":
+                        peer_data=peer_data[peer_data["position"]==selected_position]
+                    if match_window!="All Time":
+                        limit={"Last 10":10,"Last 5":5,"Last Game":1}[match_window]
+                        peer_data=peer_data.sort_values(["played_at","match_id"],ascending=[False,False],na_position="last")
+                        peer_data=peer_data.groupby("player_id",group_keys=False).head(limit)
+                    player_means=[]
+                    for pid, group in peer_data.groupby("player_id"):
+                        if len(group)<(5 if match_window in ("All Time","Last 10") else 3 if match_window=="Last 5" else 1):
+                            continue
+                        if label=="Total recoveries":
+                            counters=[_peer_field(group,f) for f in ("possessionWonDefensiveThird","possessionWonMiddleThird","possessionWonAttackingThird")]
+                            val=sum(x[0] for x in counters)/len(group) if all(x is not None for x in counters) else None
+                        elif label=="Shot conversion (%)":
+                            val=_peer_ratio(group,"goals","shots")
+                        elif label=="Pass accuracy (%)":
+                            val=_peer_ratio(group,"passes_made","pass_attempts")
+                        elif label=="Tackle success (%)":
+                            val=_peer_ratio(group,"tackles_made","tackle_attempts")
+                        elif label=="Actions per appearance":
+                            parts=[_peer_field(group,f) for _,f in cards[:3] if f]
+                            val=sum(x[0] for x in parts)/len(group) if len(parts)==3 and all(x is not None for x in parts) else None
+                        else:
+                            vals=_peer_field(group,key) if key else None
+                            if vals is None:
+                                val=None
+                            elif "per appearance" in label.lower() or "/ game" in label.lower():
+                                val=vals[0]/len(group)
+                            else:
+                                # Cards showing totals should compare per-appearance
+                                # rates instead of totals inflated by games played.
+                                val=vals[0]/len(group)
+                        if val is not None:
+                            player_means.append(val)
+                    return sum(player_means)/len(player_means) if player_means else None
                 st.markdown("##### At a glance")
+                st.caption("Player totals shown for count cards; squad benchmarks are per appearance so playing more games does not inflate the comparison.")
                 for start_idx in range(0, len(cards), 2):
                     cols = st.columns(2)
                     for col, (label, key) in zip(cols, cards[start_idx:start_idx+2]):
@@ -1277,6 +1412,12 @@ with tab_squad:
                             if "per appearance" in label.lower() or "/ game" in label.lower():
                                 val = val / len(player_data) if val is not None and len(player_data) else None
                         col.metric(label, f"{val:,.1f}" if val is not None and pd.notna(val) and ("%" in label or "/" in label or "per appearance" in label.lower()) else (f"{val:,.0f}" if val is not None and pd.notna(val) else "—"))
+                        squad_average=_bench_value(label,key)
+                        if squad_average is not None:
+                            suffix="%" if "%" in label else " / game"
+                            col.caption(f"Squad avg: {squad_average:.1f}{suffix}")
+                        else:
+                            col.caption("Squad avg: unavailable")
                 st.markdown("##### Performance visualisation")
                 if area == "Possession":
                     recoveries = [("Defensive",stat_total("possessionWonDefensiveThird")),
@@ -1331,7 +1472,12 @@ with tab_squad:
                 st.markdown("##### Squad benchmark")
                 st.caption(f"{nice_name(benchmark_field)} per appearance · minimum {min_apps} recorded games · same position and window")
                 if bench:
-                    bench_df=pd.DataFrame(bench).sort_values("Per appearance",ascending=False).head(12)
+                    all_bench_df=pd.DataFrame(bench)
+                    squad_mean=all_bench_df["Per appearance"].mean()
+                    selected_mean=all_bench_df.loc[all_bench_df["Selected"],"Per appearance"]
+                    st.metric("Squad average / appearance",f"{squad_mean:.2f}",
+                        delta=f"{float(selected_mean.iloc[0])-squad_mean:+.2f} player vs squad" if not selected_mean.empty else None)
+                    bench_df=all_bench_df.sort_values("Per appearance",ascending=False).head(12)
                     st.altair_chart(alt.Chart(bench_df).mark_bar().encode(
                         x=alt.X("Per appearance:Q",title="Per appearance"),
                         y=alt.Y("Player:N",sort="-x",title=None),
@@ -1434,6 +1580,45 @@ with tab_squad:
                         for column, (label, value) in zip(columns, metrics[start:start + 3]):
                             column.metric(label, value)
 
+                    # Squad comparison uses all qualifying archived appearances at the
+                    # selected positions. Never convert absent source counters into zeros.
+                    st.markdown("#### Player average stats · vs squad")
+                    squad_peer = profiles[profiles["position"].isin(selected_positions)].copy()
+                    comparison_fields = [
+                        ("Goals / game", "goals"), ("Assists / game", "assists"),
+                        ("Match rating", "rating"), ("Passes / game", "passes_made"),
+                        ("Tackles / game", "tackles_made"), ("Shots / game", "shots"),
+                    ]
+                    def _avg_complete(dataset, field, rating=False):
+                        if dataset.empty or field not in dataset:
+                            return None
+                        vals = pd.to_numeric(dataset[field], errors="coerce")
+                        if vals.isna().any() or vals.empty:
+                            return None
+                        return float(vals.mean())
+                    average_rows=[]
+                    for label, field in comparison_fields:
+                        player_avg=_avg_complete(selected, field)
+                        squad_avg=_avg_complete(squad_peer, field)
+                        # Compute squad average across per-player averages so each
+                        # squad member contributes equally, not each appearance.
+                        if field in squad_peer and not squad_peer.empty:
+                            grouped=[]
+                            for pid, group in squad_peer.groupby("player_id"):
+                                val=_avg_complete(group,field)
+                                if val is not None:
+                                    grouped.append(val)
+                            squad_avg=float(sum(grouped)/len(grouped)) if grouped else None
+                        average_rows.append({"Statistic":label,
+                            "Player":round(player_avg,2) if player_avg is not None else None,
+                            "Squad average":round(squad_avg,2) if squad_avg is not None else None,
+                            "Difference":round(player_avg-squad_avg,2) if player_avg is not None and squad_avg is not None else None})
+                    st.dataframe(pd.DataFrame(average_rows), hide_index=True, use_container_width=True,
+                        column_config={"Player":st.column_config.NumberColumn(format="%.2f"),
+                                       "Squad average":st.column_config.NumberColumn(format="%.2f"),
+                                       "Difference":st.column_config.NumberColumn(format="%+.2f")})
+                    st.caption("Per-appearance averages; squad benchmark is the mean of eligible players' averages at the selected positions. Missing recorded values are excluded rather than assumed zero.")
+
                     style, style_reason=sh_archetype(selected)
                     st.markdown(f"**Playing style: {style}**")
                     st.caption(style_reason)
@@ -1443,15 +1628,33 @@ with tab_squad:
                     else:
                         st.caption("Form comparison requires at least ten recorded match ratings.")
                     selected_sorted=selected.sort_values(["played_at","match_id"])
-                    if len(selected_sorted)>=5 and selected_sorted["goals"].notna().all():
-                        rolling=selected_sorted[["goals","assists"]].copy()
-                        rolling["Goals / game (last 5)"]=rolling["goals"].rolling(5,min_periods=5).mean()
-                        if rolling["assists"].notna().all():
-                            rolling["Assists / game (last 5)"]=rolling["assists"].rolling(5,min_periods=5).mean()
-                        rolling=rolling.dropna(subset=["Goals / game (last 5)"]).reset_index(drop=True)
-                        rolling.index=rolling.index+5
-                        st.markdown("**Rolling attacking form**")
-                        st.line_chart(rolling[[c for c in rolling if c.endswith("(last 5)")]],y_label="Per appearance")
+                    attacking=selected_sorted[["match_id","goals","assists"]].copy()
+                    attacking["goals"]=pd.to_numeric(attacking["goals"],errors="coerce")
+                    attacking["assists"]=pd.to_numeric(attacking["assists"],errors="coerce")
+                    attacking=attacking.dropna(subset=["goals","assists"]).reset_index(drop=True)
+                    st.markdown("**Goal involvements by match**")
+                    if attacking.empty:
+                        st.info("Complete goals and assists are needed for the attacking-form chart.")
+                    else:
+                        attacking["Match"]=range(1,len(attacking)+1)
+                        attacking["Involvements"]=attacking["goals"]+attacking["assists"]
+                        long=attacking.melt(id_vars=["Match","Involvements"],value_vars=["goals","assists"],
+                            var_name="Contribution",value_name="Count")
+                        long["Contribution"]=long["Contribution"].map({"goals":"Goals","assists":"Assists"})
+                        bars=alt.Chart(long).mark_bar().encode(
+                            x=alt.X("Match:O",title="Recorded appearance (chronological)"),
+                            y=alt.Y("Count:Q",stack="zero",title="Goal involvements",axis=alt.Axis(tickMinStep=1,format="d")),
+                            color=alt.Color("Contribution:N",scale=alt.Scale(domain=["Goals","Assists"],range=["#C8102E","#448ad8"])),
+                            order=alt.Order("Contribution:N",sort="descending"),
+                            tooltip=["Match:O","Contribution:N",alt.Tooltip("Count:Q",format=".0f")])
+                        segment_labels=alt.Chart(long[long["Count"]>0]).mark_text(color="white",fontWeight="bold",fontSize=12).encode(
+                            x="Match:O",y=alt.Y("Count:Q",stack="center"),
+                            text=alt.Text("Count:Q",format=".0f"),detail="Contribution:N",
+                            order=alt.Order("Contribution:N",sort="descending"))
+                        totals=alt.Chart(attacking).mark_text(dy=-10,fontWeight="bold").encode(
+                            x="Match:O",y="Involvements:Q",text=alt.Text("Involvements:Q",format=".0f"))
+                        st.altair_chart((bars+segment_labels+totals).properties(height=285),use_container_width=True)
+                        st.caption("Red = goals, blue = assists. Labels on top = goals + assists. Whole-number counts only; gaps indicate unavailable source records.")
 
                     st.subheader("Match rating trend")
                     rating_history = selected.sort_values("played_at").copy()
@@ -1852,11 +2055,28 @@ with tab_fun:
     ordered = {name: (name, winner, detail, score) for name, winner, detail, score in genuine}
     order = ["Main Character Syndrome", "Stormtrooper Award", "Purple Patch", "The Black Hole", "Tap-in Merchant", "Dynamic Duo", "The Curse", "Comeback King"]
     awards = [ordered[name] for name in order]
+    # Fixed-winner joke awards: gentle source-snapshot-driven fluctuations only.
+    # The fingerprint is stable across page refreshes and different visitors.
+    # When provider does not expose a persisted last-sync timestamp, this varies
+    # only when the stored data changes (not necessarily after an identical sync).
+    sync_meta = next((str(d.get(k)) for d in (data, overall, club) if isinstance(d,dict)
+        for k in ("last_synced_at","synced_at","updated_at","lastSync","last_updated") if d.get(k)),None)
+    if not sync_meta and not stored_matches.empty and "updated_at" in stored_matches:
+        known_updates=stored_matches["updated_at"].dropna()
+        if not known_updates.empty:
+            sync_meta=str(known_updates.max())
+    if not sync_meta:
+        sync_meta=json.dumps({"overall":overall,"games":len(all_matches),
+            "players":len(all_performances)},sort_keys=True,default=str)
+    seed=int(hashlib.sha256(sync_meta.encode("utf-8")).hexdigest()[:12],16)
+    def prank_stat(nominal,span,index):
+        delta=(((seed >> (index*9)) & 511)/511.0-.5)*2*span
+        return nominal+delta
     awards += [
-        ("The Tactical Genius", "VegNinja", "Highest tactical influence.", "94.7 / 100"),
-        ("The Passenger", "DYLDESTRUCT", "Lowest attacking involvement.", "87.3%"),
-        ("Ratings Farmer", "Seannn2", "Highest low-risk rating efficiency.", "9.4 / 10"),
-        ("The Architect", "VegNinja", "Highest creative influence.", "96.2 / 100"),
+        ("The Tactical Genius", "VegNinja", "Highest tactical influence.", f"{prank_stat(94.7,.5,0):.1f} / 100"),
+        ("The Passenger", "DYLDESTRUCT", "Lowest attacking involvement.", f"{prank_stat(87.3,.6,1):.1f}%"),
+        ("Ratings Farmer", "Seannn2", "Highest low-risk rating efficiency.", f"{prank_stat(9.4,.08,2):.2f} / 10"),
+        ("The Architect", "VegNinja", "Highest creative influence.", f"{prank_stat(96.2,.4,3):.1f} / 100"),
     ]
     # Use a real CSS grid rather than st.columns: Streamlit stacks columns
     # vertically on narrow mobile screens.
