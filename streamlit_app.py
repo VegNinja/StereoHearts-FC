@@ -520,53 +520,132 @@ header_markup = f'''<div class="sh-club-panel">
 header_markup = "\n".join(line.lstrip() for line in header_markup.splitlines())
 st.markdown(header_markup, unsafe_allow_html=True)
 
-# Division Journey: source fields must be identified as CURRENT, not best-ever.
-def _division_source(keys):
-    for src in (overall, club):
-        if not isinstance(src, dict):
-            continue
-        for key in keys:
-            value = src.get(key)
-            if value is not None and str(value).strip():
-                return value
-    return None
+# Division Journey — independently sourced from EA's current-season leaderboard.
+# Unlike clubs/overallStats this endpoint has both currentDivision and
+# current-season promotions/relegations. Match by immutable club ID, not name.
+@st.cache_data(ttl=900, show_spinner=False)
+def sh_leaderboard_division(club_id, club_name):
+    from fc_clubs_api import FC27API
+    api = FC27API(timezone="Europe/London")
 
-current_div = _division_source(("currentDivision", "currentDiv", "divisionCurrent", "current_division"))
-season_promos = _division_source(("seasonPromotions", "promotionsThisSeason", "currentSeasonPromotions"))
-season_relegs = _division_source(("seasonRelegations", "relegationsThisSeason", "currentSeasonRelegations"))
-# An EA division emblem may be added after a validated asset source is found.
-# Never render arbitrary third-party image URLs as authentic official badges.
-def _div_num(value):
+    def exact_row(endpoint):
+        response = api.get_json(endpoint, {
+            "clubName": club_name, "maxResultCount": 100,
+        })
+        if isinstance(response, dict):
+            possible = next((response[k] for k in ("clubs", "items", "data", "results")
+                             if isinstance(response.get(k), list)), None)
+            rows = possible if possible is not None else list(response.values())
+        else:
+            rows = response if isinstance(response, list) else []
+        for record in rows:
+            if not isinstance(record, dict):
+                continue
+            rid = record.get("clubId")
+            if rid is None and isinstance(record.get("clubInfo"), dict):
+                rid = record["clubInfo"].get("clubId")
+            if str(rid) == str(club_id):
+                return record
+        return None
+
+    season_row, all_time_row, problems = None, None, []
     try:
-        return int(float(value))
+        season_row = exact_row("currentSeasonLeaderboard/search")
+    except Exception as exc:
+        problems.append("Season leaderboard unavailable: " + str(exc))
+    # If current season search fails, all-time leaderboard can still tell
+    # us the current division, but NEVER supply season promotions/relegations.
+    if season_row is None or season_row.get("currentDivision") in (None, ""):
+        try:
+            all_time_row = exact_row("allTimeLeaderboard/search")
+        except Exception as exc:
+            problems.append("All-time leaderboard unavailable: " + str(exc))
+    div_row = season_row if season_row and season_row.get("currentDivision") not in (None, "") else all_time_row
+    return {
+        "current_division": (div_row or {}).get("currentDivision"),
+        "season_promotions": (season_row or {}).get("promotions"),
+        "season_relegations": (season_row or {}).get("relegations"),
+        "season_available": season_row is not None,
+        "source": "current season" if div_row is season_row and season_row is not None else "all-time fallback" if div_row else None,
+        "problems": problems,
+    }
+
+try:
+    division_data = sh_leaderboard_division(CLUB_ID, CLUB_NAME)
+except Exception as exc:
+    division_data = {"current_division": None, "season_promotions": None,
+                     "season_relegations": None, "season_available": False,
+                     "source": None, "problems": [str(exc)]}
+
+
+def _sh_division_number(value):
+    try:
+        n = int(value)
+        return n if 1 <= n <= 6 else None
     except (TypeError, ValueError):
         return None
 
-current_div_num = _div_num(current_div)
-progress_items = [(5,"5"),(4,"4"),(3,"3"),(2,"2"),(1,"1"),(0,"Elite")]
-progress_html = ''.join(
-    f'<div class="sh-div-item {"sh-div-active" if current_div_num == number else ""}"><strong>{label}</strong><small>{"Elite" if number == 0 else "Div " + label}</small></div>'
-    for number, label in progress_items
-)
-season_value = lambda v: str(int(float(v))) if _number(v) is not None and float(v) >= 0 else "—"
+
+def _sh_count(value):
+    try:
+        n = int(value)
+        return str(n) if n >= 0 else "—"
+    except (TypeError, ValueError):
+        return "—"
+
+
+current_div_num = _sh_division_number(division_data["current_division"])
+season_promos = division_data["season_promotions"]
+season_relegs = division_data["season_relegations"]
+
+# Badge URLs are provided by the same installed FC27 API client; gracefully
+# fall back to numerals if the CDN image cannot load.
+try:
+    from fc_clubs_api import assets as sh_fc_assets
+except ImportError:
+    sh_fc_assets = None
+
+progress_items = [(5,"5"),(4,"4"),(3,"3"),(2,"2"),(1,"1"),(None,"Elite")]
+progress_parts = []
+for number, label in progress_items:
+    active = current_div_num is not None and current_div_num == number
+    # EA's sixth division badge is NOT necessarily the Elite crest. Don't
+    # show an incorrectly labelled official badge for Elite.
+    image_html = ""
+    if sh_fc_assets is not None and number in (1,2,3,4,5):
+        try:
+            url = html.escape(sh_fc_assets.division_crest_url(number), quote=True)
+            image_html = f'<img class="sh-div-emblem" src="{url}" alt="Division {number}" />'
+        except Exception:
+            pass
+    progress_parts.append(
+        f'<div class="sh-div-item {"sh-div-active" if active else ""}">'
+        f'{image_html}<strong>{html.escape(label)}</strong>'
+        f'<small>{"Elite" if number is None else "Div "+label}</small></div>'
+    )
+progress_html = "".join(progress_parts)
+current_label = ("Division " + str(current_div_num) if current_div_num in (1,2,3,4,5,6)
+                 else "Unavailable")
+
 st.markdown('''<style>
 .sh-division-panel{border:1px solid rgba(125,125,130,.3);border-radius:13px;padding:15px 17px;margin:0 0 19px;background:rgba(100,100,100,.065)}
 .sh-division-top{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center;margin-bottom:12px}
 .sh-division-title{font-weight:800;font-size:1rem}
 .sh-div-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
-.sh-div-item{padding:9px 2px;text-align:center;border-radius:8px;background:rgba(115,115,120,.11);border:1px solid rgba(110,110,110,.2)}
-.sh-div-item strong{display:block;font-size:1.2rem}.sh-div-item small{opacity:.72;font-size:.65rem}
+.sh-div-item{padding:9px 2px;text-align:center;border-radius:8px;background:rgba(115,115,120,.11);border:1px solid rgba(110,110,110,.2);min-width:0}
+.sh-div-emblem{height:31px;max-width:100%;object-fit:contain;display:block;margin:0 auto 3px}
+.sh-div-item strong{display:block;font-size:1.1rem}.sh-div-item small{opacity:.72;font-size:.65rem}
 .sh-div-active{background:#9b1c2e;color:white;border:2px solid #eaa355}
 .sh-div-active small{opacity:1}.sh-season-row{display:flex;gap:18px;font-size:.86rem;margin-top:11px;flex-wrap:wrap}
-@media(max-width:560px){.sh-div-grid{gap:3px}.sh-div-item{padding:7px 1px}.sh-div-item strong{font-size:1rem}.sh-div-item small{font-size:.56rem}}
+@media(max-width:560px){.sh-div-grid{gap:3px}.sh-div-item{padding:7px 1px}.sh-div-item strong{font-size:1rem}.sh-div-item small{font-size:.56rem}.sh-div-emblem{height:23px}}
 </style>''', unsafe_allow_html=True)
 st.markdown(f'''<section class="sh-division-panel">
-<div class="sh-division-top"><span class="sh-division-title">🏆 Division Progress</span><span>Current: <b>{'Elite' if current_div_num==0 else 'Division '+str(current_div_num) if current_div_num in (1,2,3,4,5) else 'Not available from current EA snapshot'}</b></span></div>
+<div class="sh-division-top"><span class="sh-division-title">🏆 Division Progress</span><span>Current: <b>{current_label}</b></span></div>
 <div class="sh-div-grid">{progress_html}</div>
-<div class="sh-season-row"><span>🟢 Season promotions: <b>{season_value(season_promos)}</b></span><span>🔴 Season relegations: <b>{season_value(season_relegs)}</b></span></div>
+<div class="sh-season-row"><span>🟢 Season promotions: <b>{_sh_count(season_promos)}</b></span><span>🔴 Season relegations: <b>{_sh_count(season_relegs)}</b></span></div>
 </section>''', unsafe_allow_html=True)
-if season_promos is None or season_relegs is None:
-    st.caption("Season promotion/relegation totals are unavailable from the current stored EA fields; lifetime totals are intentionally not substituted.")
+if current_div_num is None or not division_data["season_available"]:
+    st.caption("EA's leaderboard data is temporarily unavailable; division and season counters update when EA responds.")
 
 
 # Four consolidated sections. All EA/Supabase sync and raw-data tools remain available.
