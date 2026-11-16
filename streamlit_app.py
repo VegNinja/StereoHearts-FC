@@ -111,12 +111,14 @@ h1 {font-weight: 800 !important;}
   width:100% !important; min-width:0 !important;
 }
 .st-key-h2h_player_picker [data-testid="column"] {
-  flex:1 1 210px !important; min-width:0 !important;
+  flex:1 1 calc(50% - 6px) !important; min-width:0 !important;
   width:auto !important; max-width:100% !important;
 }
 .st-key-h2h_player_picker [data-testid="stSelectbox"] { min-width:0 !important; width:100% !important; }
 @media (max-width: 480px) {
-  .st-key-h2h_player_picker [data-testid="column"] { flex-basis:100% !important; }
+  .st-key-h2h_player_picker [data-testid="stHorizontalBlock"] { flex-wrap:nowrap!important; gap:8px!important; }
+  .st-key-h2h_player_picker [data-testid="column"] { flex:1 1 0!important; min-width:0!important; }
+  .st-key-h2h_player_picker label { font-size:.78rem!important; }
 }
 @media (max-width:700px) {
   .st-key-compare_player_picker [data-testid="column"] {flex:1 1 calc(50% - 10px) !important;}
@@ -497,29 +499,6 @@ def _kpi(label, value, tone=""):
 badges = "".join(f'<span class="sh-form-result sh-form-{safe(r)}">{safe(r)}</span>' for r in form_values)
 if not badges:
     badges = '<span class="sh-form-empty">No archived results</span>'
-header_markup = f'''<div class="sh-club-panel">
-  <div class="sh-club-identity">
-
-    <div class="sh-club-heading"><h3>StereoHearts FC</h3>
-      <div class="sh-club-badges"><span>Best: {safe('Div '+str(division) if division is not None else '—')}</span>
-      <span>SR: {safe(skill if skill is not None else '—')}</span></div>
-      <div class="sh-club-record"><span>{safe(_fmt(wins))}W</span><span>{safe(_fmt(draws))}D</span><span>{safe(_fmt(losses))}L</span></div>
-    </div>
-    <img class="sh-club-photo" src="data:image/jpeg;base64,{'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'}" alt="StereoHearts FC club photo" />
-  </div>
-  <div class="sh-club-kpis">
-    {_kpi('WIN RATE',_fmt(win_rate,1,'%'),'sh-yellow')}
-    {_kpi('GOAL DIFF',('+' if goal_diff is not None and goal_diff > 0 else '')+_fmt(goal_diff),'sh-green')}
-    {_kpi('GOALS/GM',_fmt(goals_per_game,2))}
-    {_kpi('STREAK',streak,'sh-red')}
-  </div>
-  <div class="sh-form-strip">{badges}</div>
-</div>'''
-# Streamlit treats indented HTML lines as a Markdown code block.
-# Strip indentation from every HTML line before rendering.
-header_markup = "\n".join(line.lstrip() for line in header_markup.splitlines())
-st.markdown(header_markup, unsafe_allow_html=True)
-
 # Division Journey — independently sourced from EA's current-season leaderboard.
 # Unlike clubs/overallStats this endpoint has both currentDivision and
 # current-season promotions/relegations. Match by immutable club ID, not name.
@@ -555,7 +534,7 @@ def sh_leaderboard_division(club_id, club_name):
         problems.append("Season leaderboard unavailable: " + str(exc))
     # If current season search fails, all-time leaderboard can still tell
     # us the current division, but NEVER supply season promotions/relegations.
-    if season_row is None or season_row.get("currentDivision") in (None, ""):
+    if True:  # Get all-time best as well as current-season division.
         try:
             all_time_row = exact_row("allTimeLeaderboard/search")
         except Exception as exc:
@@ -563,6 +542,7 @@ def sh_leaderboard_division(club_id, club_name):
     div_row = season_row if season_row and season_row.get("currentDivision") not in (None, "") else all_time_row
     return {
         "current_division": (div_row or {}).get("currentDivision"),
+        "best_division": (all_time_row or season_row or {}).get("bestDivision"),
         "season_promotions": (season_row or {}).get("promotions"),
         "season_relegations": (season_row or {}).get("relegations"),
         "season_available": season_row is not None,
@@ -574,7 +554,7 @@ try:
     division_data = sh_leaderboard_division(CLUB_ID, CLUB_NAME)
 except Exception as exc:
     division_data = {"current_division": None, "season_promotions": None,
-                     "season_relegations": None, "season_available": False,
+                     "season_relegations": None, "best_division": None, "season_available": False,
                      "source": None, "problems": [str(exc)]}
 
 
@@ -598,6 +578,53 @@ current_div_num = _sh_division_number(division_data["current_division"])
 season_promos = division_data["season_promotions"]
 season_relegs = division_data["season_relegations"]
 
+
+# FC27's published API numeric division mapping does not document Elite.
+# Until EA exposes/updates an Elite flag, reflect the club's explicitly
+# reported promotion as a *labelled manual override*, not as EA data.
+# Set [division] current_override = "" in Streamlit Secrets to disable it;
+# after EA catches up, remove this temporary fallback.
+try:
+    sh_manual_override = str(st.secrets.get("division", {}).get("current_override", "Elite")).strip()
+except Exception:
+    sh_manual_override = "Elite"
+sh_manual_elite = sh_manual_override.casefold() == "elite"
+sh_api_division = _sh_division_number(division_data.get("current_division"))
+sh_api_elite = str(division_data.get("current_division", "")).strip().casefold() == "elite"
+sh_is_elite = sh_api_elite or (sh_manual_elite and sh_api_division in (None, 1))
+sh_manual_in_use = sh_is_elite and not sh_api_elite
+sh_best_candidates = [x for x in (
+    _sh_division_number(division),
+    _sh_division_number(division_data.get("best_division")),
+    sh_api_division,
+) if x is not None]
+sh_best_division = min(sh_best_candidates) if sh_best_candidates else None
+sh_best_label = ("Elite" if sh_is_elite else
+                 "Div " + str(sh_best_division) if sh_best_division is not None else "—")
+
+header_markup = f'''<div class="sh-club-panel">
+  <div class="sh-club-identity">
+
+    <div class="sh-club-heading"><h3>StereoHearts FC</h3>
+      <div class="sh-club-badges"><span>Best: {safe(sh_best_label + ("*" if sh_manual_in_use else ""))}</span>
+      <span>SR: {safe(skill if skill is not None else '—')}</span></div>
+      <div class="sh-club-record"><span>{safe(_fmt(wins))}W</span><span>{safe(_fmt(draws))}D</span><span>{safe(_fmt(losses))}L</span></div>
+    </div>
+    <img class="sh-club-photo" src="data:image/jpeg;base64,{'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'}" alt="StereoHearts FC club photo" />
+  </div>
+  <div class="sh-club-kpis">
+    {_kpi('WIN RATE',_fmt(win_rate,1,'%'),'sh-yellow')}
+    {_kpi('GOAL DIFF',('+' if goal_diff is not None and goal_diff > 0 else '')+_fmt(goal_diff),'sh-green')}
+    {_kpi('GOALS/GM',_fmt(goals_per_game,2))}
+    {_kpi('STREAK',streak,'sh-red')}
+  </div>
+  <div class="sh-form-strip">{badges}</div>
+</div>'''
+# Streamlit treats indented HTML lines as a Markdown code block.
+# Strip indentation from every HTML line before rendering.
+header_markup = "\n".join(line.lstrip() for line in header_markup.splitlines())
+st.markdown(header_markup, unsafe_allow_html=True)
+
 # Badge URLs are provided by the same installed FC27 API client; gracefully
 # fall back to numerals if the CDN image cannot load.
 try:
@@ -608,7 +635,7 @@ except ImportError:
 progress_items = [(5,"5"),(4,"4"),(3,"3"),(2,"2"),(1,"1"),(None,"Elite")]
 progress_parts = []
 for number, label in progress_items:
-    active = current_div_num is not None and current_div_num == number
+    active = (sh_is_elite if number is None else (not sh_is_elite and current_div_num == number))
     # EA's sixth division badge is NOT necessarily the Elite crest. Don't
     # show an incorrectly labelled official badge for Elite.
     image_html = ""
@@ -624,8 +651,8 @@ for number, label in progress_items:
         f'<small>{"Elite" if number is None else "Div "+label}</small></div>'
     )
 progress_html = "".join(progress_parts)
-current_label = ("Division " + str(current_div_num) if current_div_num in (1,2,3,4,5,6)
-                 else "Unavailable")
+current_label = ("Elite" if sh_is_elite else "Division " + str(current_div_num)
+                 if current_div_num in (1,2,3,4,5,6) else "Unavailable")
 
 st.markdown('''<style>
 .sh-division-panel{border:1px solid rgba(125,125,130,.3);border-radius:13px;padding:15px 17px;margin:0 0 19px;background:rgba(100,100,100,.065)}
@@ -644,7 +671,11 @@ st.markdown(f'''<section class="sh-division-panel">
 <div class="sh-div-grid">{progress_html}</div>
 <div class="sh-season-row"><span>🟢 Season promotions: <b>{_sh_count(season_promos)}</b></span><span>🔴 Season relegations: <b>{_sh_count(season_relegs)}</b></span></div>
 </section>''', unsafe_allow_html=True)
-if current_div_num is None or not division_data["season_available"]:
+if sh_manual_in_use:
+    st.caption("* Elite is a temporary club-reported override; EA's leaderboard currently reports "
+               + (f"Division {sh_api_division}." if sh_api_division is not None else "no division.")
+               + ' To disable it, set `[division] current_override = ""` in Streamlit Secrets.')
+if (current_div_num is None and not sh_is_elite) or not division_data["season_available"]:
     st.caption("EA's leaderboard data is temporarily unavailable; division and season counters update when EA responds.")
 
 
@@ -1135,126 +1166,138 @@ with tab_squad:
                 pool["result_label"] = pool["match_id"].astype(str).map(outcome_map)
             else:
                 pool["result_label"] = pd.NA
+            position_options = sorted(
+                [p for p in pool["position"].dropna().astype(str).unique().tolist()
+                 if p.strip() and p.lower() not in ("nan", "unknown", "none")]
+            ) if "position" in pool.columns else []
+            h2h_position = st.selectbox(
+                "Position", ["All positions"] + position_options, key="h2h_position"
+            )
+            if h2h_position != "All positions":
+                pool = pool[pool["position"].astype(str) == h2h_position].copy()
             names = pool.groupby("player_id")["player_name"].last().to_dict()
             ids = sorted(names, key=lambda pid: str(names[pid]).casefold())
-            with st.container(key="h2h_player_picker"):
-                a_col,b_col = st.columns(2)
-                first = a_col.selectbox("Player A",ids,key="h2h_a",format_func=lambda p:str(names[p]))
-                choices = [p for p in ids if p != first]
-                second = b_col.selectbox("Player B",choices,key="h2h_b",format_func=lambda p:str(names[p]))
-            window = st.segmented_control("Comparison window",["All time","Last 10","Last 5"],default="All time",key="h2h_window")
-            selected = []
-            for pid in (first,second):
-                games = pool[pool["player_id"] == pid].sort_values(["played_at","match_id"],ascending=False)
-                if window != "All time":
-                    games = games.head(10 if window == "Last 10" else 5)
-                selected.append(games)
-            def _complete(games, column):
-                if column not in games or games.empty:
-                    return None
-                vals = pd.to_numeric(games[column],errors="coerce")
-                return float(vals.sum()) if vals.notna().all() else None
-            def _per_game(games,column):
-                total = _complete(games,column)
-                return total/len(games) if total is not None and len(games) else None
-            def _rating(games):
-                if games.empty or games["rating"].isna().any():return None
-                return float(games["rating"].mean())
-            def _pass(games):
-                done,attempted=_complete(games,"passes_made"),_complete(games,"pass_attempts")
-                return 100*done/attempted if done is not None and attempted and attempted>0 else None
-            def _win(games):
-                if games.empty or games["result_label"].isna().any():return None
-                return 100*games["result_label"].eq("W").mean()
-            stats=[("Goals per appearance",lambda g:_per_game(g,"goals"),"per game"),
-                   ("Assists per appearance",lambda g:_per_game(g,"assists"),"per game"),
-                   ("Tackles per appearance",lambda g:_per_game(g,"tackles_made"),"per game"),
-                   ("Pass completion",_pass,"%"),
-                   ("Average match rating",_rating,"rating"),
-                   ("Win rate",_win,"%")]
-            # Full-width, responsive diverging chart: avoid nested Streamlit columns
-            # that previously collapsed the entire comparison to a tiny centre strip.
-            st.markdown(
-                '<div style="text-align:center;margin:12px 0 6px;">'
-                '<div style="font-weight:800;font-size:clamp(1.1rem,3vw,1.7rem);overflow-wrap:anywhere">'
-                f'{html.escape(str(names[first]))} <span style="color:#C8102E">VS</span> '
-                f'{html.escape(str(names[second]))}</div>'
-                '<div style="opacity:.72;font-size:.85rem;margin-top:4px">'
-                f'{len(selected[0])} vs {len(selected[1])} recorded appearances · {html.escape(window)}'
-                '</div></div>', unsafe_allow_html=True,
-            )
-            battle_rows=[]
-            unavailable=[]
-            winscore=[0,0]
-            known=0
-            for order,(label,fn,unit) in enumerate(stats):
-                values=[fn(g) for g in selected]
-                if any(v is None for v in values):
-                    unavailable.append(label)
-                    continue
-                known+=1
-                delta=values[0]-values[1]
-                winner=0 if delta>1e-8 else (1 if delta< -1e-8 else None)
-                if winner is not None:
-                    winscore[winner]+=1
-                # Per-metric common scale, preserving actual values in labels/tooltips.
-                # Percentages always use 100 as their logical maximum.
-                maximum=100.0 if unit=='%' else (max(abs(v) for v in values) or 1.0)
-                for index,(pid,value) in enumerate(zip((first,second),values)):
-                    size=min(1.0,max(0.0,abs(value)/maximum))
-                    direction=-1 if index==0 else 1
-                    display=f"{value:.1f}{'%' if unit=='%' else ''}"
-                    verdict="✓" if winner==index else ("✕" if winner is not None else "=")
-                    battle_rows.append({
-                        'Category':label,'Order':order,'Player':str(names[pid]),
-                        'Side':'Player A' if index==0 else 'Player B',
-                        'Signed':size*direction,'Zero':0.0,
-                        'Actual':value,'Display':f'{verdict}  {display}',
-                    })
-            if battle_rows:
-                st.markdown('#### The statistical battle')
-                st.caption('Red bars extend left for Player A; blue bars extend right for Player B. '
-                           'Each pair shares its own scale, with actual values and category winners shown.')
-                battle=pd.DataFrame(battle_rows)
-                order=[label for label,_,_ in stats if label not in unavailable]
-                y=alt.Y('Category:N', sort=order, title=None,
-                        axis=alt.Axis(labelLimit=180,labelFontSize=12,labelPadding=8,
-                                      ticks=False,domain=False))
-                x=alt.X('Signed:Q',scale=alt.Scale(domain=[-1.43,1.43]),
-                        axis=alt.Axis(labels=False,ticks=False,domain=False,grid=False,title=None))
-                legend=alt.Legend(title=None,orient='top',symbolType='square')
-                bars=(alt.Chart(battle).mark_bar(size=25,cornerRadiusEnd=4)
-                      .encode(y=y,x=x,x2='Zero:Q',
-                              color=alt.Color('Side:N',scale=alt.Scale(
-                                  domain=['Player A','Player B'],range=['#C8102E','#3989DB']),
-                                  legend=legend),
-                              tooltip=[alt.Tooltip('Player:N'),alt.Tooltip('Category:N'),
-                                       alt.Tooltip('Actual:Q',format='.2f')]))
-                left=(alt.Chart(battle[battle['Side']=='Player A'])
-                      .mark_text(align='right',dx=-7,fontSize=12,fontWeight='bold',color='#F07383')
-                      .encode(x=x,y=y,text='Display:N'))
-                right=(alt.Chart(battle[battle['Side']=='Player B'])
-                       .mark_text(align='left',dx=7,fontSize=12,fontWeight='bold',color='#6EB5FF')
-                       .encode(x=x,y=y,text='Display:N'))
-                baseline=(alt.Chart(pd.DataFrame({'zero':[0.0]}))
-                          .mark_rule(color='#a1a1aa',strokeWidth=1.3)
-                          .encode(x='zero:Q'))
-                chart=(bars+baseline+left+right).properties(
-                    height=max(300, len(order)*57),
-                    padding={'top':8,'left':6,'right':10,'bottom':8}
-                ).configure_view(stroke=None)
-                st.altair_chart(chart,use_container_width=True)
-                score_left,score_right=st.columns(2)
-                with score_left:
-                    st.markdown(f'**🔴 {html.escape(str(names[first]))}: {winscore[0]} category wins**')
-                with score_right:
-                    st.markdown(f'**🔵 {html.escape(str(names[second]))}: {winscore[1]} category wins**')
-                st.caption(f'{known} comparable categories · ✓ winner · ✕ loser · = tie. '
-                           'Categories count equally; not an official EA player rating.')
-            if unavailable:
-                st.caption('Unavailable comparisons (incomplete recorded data): '+', '.join(unavailable))
-            if not battle_rows:
-                st.info('No metrics have complete data for both selected players.')
+            if len(ids) < 2:
+                st.info("At least two players with recorded appearances in this position are needed.")
+            if len(ids) >= 2:
+                with st.container(key="h2h_player_picker"):
+                    a_col,b_col = st.columns(2, gap="small")
+                    first = a_col.selectbox("Player A",ids,key="h2h_a",format_func=lambda p:str(names[p]))
+                    choices = [p for p in ids if p != first]
+                    second = b_col.selectbox("Player B",choices,key="h2h_b",format_func=lambda p:str(names[p]))
+                window = st.segmented_control("Comparison window",["All time","Last 10","Last 5"],default="All time",key="h2h_window")
+                selected = []
+                for pid in (first,second):
+                    games = pool[pool["player_id"] == pid].sort_values(["played_at","match_id"],ascending=False)
+                    if window != "All time":
+                        games = games.head(10 if window == "Last 10" else 5)
+                    selected.append(games)
+                def _complete(games, column):
+                    if column not in games or games.empty:
+                        return None
+                    vals = pd.to_numeric(games[column],errors="coerce")
+                    return float(vals.sum()) if vals.notna().all() else None
+                def _per_game(games,column):
+                    total = _complete(games,column)
+                    return total/len(games) if total is not None and len(games) else None
+                def _rating(games):
+                    if games.empty or games["rating"].isna().any():return None
+                    return float(games["rating"].mean())
+                def _pass(games):
+                    done,attempted=_complete(games,"passes_made"),_complete(games,"pass_attempts")
+                    return 100*done/attempted if done is not None and attempted and attempted>0 else None
+                def _win(games):
+                    if games.empty or games["result_label"].isna().any():return None
+                    return 100*games["result_label"].eq("W").mean()
+                stats=[("Goals per appearance",lambda g:_per_game(g,"goals"),"per game"),
+                       ("Assists per appearance",lambda g:_per_game(g,"assists"),"per game"),
+                       ("Tackles per appearance",lambda g:_per_game(g,"tackles_made"),"per game"),
+                       ("Pass completion",_pass,"%"),
+                       ("Average match rating",_rating,"rating"),
+                       ("Win rate",_win,"%")]
+                # Full-width, responsive diverging chart: avoid nested Streamlit columns
+                # that previously collapsed the entire comparison to a tiny centre strip.
+                st.markdown(
+                    '<div style="text-align:center;margin:12px 0 6px;">'
+                    '<div style="font-weight:800;font-size:clamp(1.1rem,3vw,1.7rem);overflow-wrap:anywhere">'
+                    f'{html.escape(str(names[first]))} <span style="color:#C8102E">VS</span> '
+                    f'{html.escape(str(names[second]))}</div>'
+                    '<div style="opacity:.72;font-size:.85rem;margin-top:4px">'
+                    f'{len(selected[0])} vs {len(selected[1])} recorded appearances · {html.escape(window)}'
+                    '</div></div>', unsafe_allow_html=True,
+                )
+                battle_rows=[]
+                unavailable=[]
+                winscore=[0,0]
+                known=0
+                for order,(label,fn,unit) in enumerate(stats):
+                    values=[fn(g) for g in selected]
+                    if any(v is None for v in values):
+                        unavailable.append(label)
+                        continue
+                    known+=1
+                    delta=values[0]-values[1]
+                    winner=0 if delta>1e-8 else (1 if delta< -1e-8 else None)
+                    if winner is not None:
+                        winscore[winner]+=1
+                    # Per-metric common scale, preserving actual values in labels/tooltips.
+                    # Percentages always use 100 as their logical maximum.
+                    maximum=100.0 if unit=='%' else (max(abs(v) for v in values) or 1.0)
+                    for index,(pid,value) in enumerate(zip((first,second),values)):
+                        size=min(1.0,max(0.0,abs(value)/maximum))
+                        direction=-1 if index==0 else 1
+                        display=f"{value:.1f}{'%' if unit=='%' else ''}"
+                        verdict="✓" if winner==index else ("✕" if winner is not None else "=")
+                        battle_rows.append({
+                            'Category':label,'Order':order,'Player':str(names[pid]),
+                            'Side':'Player A' if index==0 else 'Player B',
+                            'Signed':size*direction,'Zero':0.0,
+                            'Actual':value,'Display':f'{verdict}  {display}',
+                        })
+                if battle_rows:
+                    st.markdown('#### The statistical battle')
+                    st.caption('Red bars extend left for Player A; blue bars extend right for Player B. '
+                               'Each pair shares its own scale, with actual values and category winners shown.')
+                    battle=pd.DataFrame(battle_rows)
+                    order=[label for label,_,_ in stats if label not in unavailable]
+                    y=alt.Y('Category:N', sort=order, title=None,
+                            axis=alt.Axis(labelLimit=180,labelFontSize=12,labelPadding=8,
+                                          ticks=False,domain=False))
+                    x=alt.X('Signed:Q',scale=alt.Scale(domain=[-1.43,1.43]),
+                            axis=alt.Axis(labels=False,ticks=False,domain=False,grid=False,title=None))
+                    legend=alt.Legend(title=None,orient='top',symbolType='square')
+                    bars=(alt.Chart(battle).mark_bar(size=25,cornerRadiusEnd=4)
+                          .encode(y=y,x=x,x2='Zero:Q',
+                                  color=alt.Color('Side:N',scale=alt.Scale(
+                                      domain=['Player A','Player B'],range=['#C8102E','#3989DB']),
+                                      legend=legend),
+                                  tooltip=[alt.Tooltip('Player:N'),alt.Tooltip('Category:N'),
+                                           alt.Tooltip('Actual:Q',format='.2f')]))
+                    left=(alt.Chart(battle[battle['Side']=='Player A'])
+                          .mark_text(align='right',dx=-7,fontSize=12,fontWeight='bold',color='#F07383')
+                          .encode(x=x,y=y,text='Display:N'))
+                    right=(alt.Chart(battle[battle['Side']=='Player B'])
+                           .mark_text(align='left',dx=7,fontSize=12,fontWeight='bold',color='#6EB5FF')
+                           .encode(x=x,y=y,text='Display:N'))
+                    baseline=(alt.Chart(pd.DataFrame({'zero':[0.0]}))
+                              .mark_rule(color='#a1a1aa',strokeWidth=1.3)
+                              .encode(x='zero:Q'))
+                    chart=(bars+baseline+left+right).properties(
+                        height=max(300, len(order)*57),
+                        padding={'top':8,'left':6,'right':10,'bottom':8}
+                    ).configure_view(stroke=None)
+                    st.altair_chart(chart,use_container_width=True)
+                    score_left,score_right=st.columns(2)
+                    with score_left:
+                        st.markdown(f'**🔴 {html.escape(str(names[first]))}: {winscore[0]} category wins**')
+                    with score_right:
+                        st.markdown(f'**🔵 {html.escape(str(names[second]))}: {winscore[1]} category wins**')
+                    st.caption(f'{known} comparable categories · ✓ winner · ✕ loser · = tie. '
+                               'Categories count equally; not an official EA player rating.')
+                if unavailable:
+                    st.caption('Unavailable comparisons (incomplete recorded data): '+', '.join(unavailable))
+                if not battle_rows:
+                    st.info('No metrics have complete data for both selected players.')
     elif squad_view == "Performance Areas":
         st.subheader("Performance Areas")
         st.caption("Explore each player's recorded match statistics. Missing event data is never treated as zero.")
