@@ -1322,7 +1322,7 @@ with tab_explorer:
 # Fixed awards are intentionally jokes and never presented as computed results.
 with tab_fun:
     st.subheader("Fun Stats")
-    st.caption("Eight data-driven awards and four deliberately fixed club in-jokes. Missing EA counters never count as zero.")
+    st.caption("Player awards based on archived match performances. Missing EA counters are never treated as zero.")
     genuine = []
     def add_award(name, winner=None, detail="Insufficient reliable archived data", score=None):
         genuine.append((name, winner or "Not available", detail, score))
@@ -1382,8 +1382,6 @@ with tab_fun:
         scores = groups.mean()[groups.size() >= 5] if not losses.dropna().empty else pd.Series(dtype=float)
         name, score = winner_from(scores)
         add_award("The Black Hole", name, "Most recorded possession losses per appearance; minimum five complete appearances", f"{score:.2f}/game" if score is not None else None)
-        # Do not invent weights for an agreed weighted score without a verified formula.
-        add_award("The Liability", detail="Requires agreed Chaos Score weights and reliable foul, penalty and red-card counters")
         if "result_label" in perf.columns:
             match_results = perf.dropna(subset=["result_label"]).copy()
             appearances = match_results.groupby("player_id")["match_id"].nunique()
@@ -1405,16 +1403,34 @@ with tab_fun:
         else:
             add_award("The Curse"); add_award("Dynamic Duo")
     else:
-        for label in ("Main Character Syndrome", "Stormtrooper Award", "Purple Patch", "The Black Hole", "The Liability", "The Curse", "Dynamic Duo"):
+        for label in ("Main Character Syndrome", "Stormtrooper Award", "Purple Patch", "The Black Hole", "The Curse", "Dynamic Duo"):
             add_award(label)
-    # First-time goal is not safely inferable from the standard goals counter.
-    add_award("Tap-in Merchant", detail="Requires a verified first-time-goal indicator and at least ten total goals")
+    # Only an explicit first-time-goal event counter qualifies.
+    first_time_keys = ("firstTimeGoals", "firstTimeGoalsScored", "firstTimeShotGoals")
+    if not perf.empty and "raw_data" in perf.columns:
+        tap = perf[["player_id", "goals", "raw_data"]].copy()
+        tap["first_time"] = tap["raw_data"].apply(lambda raw: event_counter(raw, first_time_keys))
+        complete = tap.groupby("player_id").agg(
+            appearances=("goals", "size"), goal_records=("goals", "count"),
+            event_records=("first_time", "count"), total_goals=("goals", "sum"),
+            first_time_goals=("first_time", "sum"))
+        complete = complete[(complete["appearances"] == complete["goal_records"]) &
+                            (complete["appearances"] == complete["event_records"]) &
+                            (complete["total_goals"] >= 10) &
+                            (complete["first_time_goals"] >= 0) &
+                            (complete["first_time_goals"] <= complete["total_goals"])]
+        ratios = complete["first_time_goals"] / complete["total_goals"] if not complete.empty else pd.Series(dtype=float)
+        name, score = winner_from(ratios)
+        add_award("Tap-in Merchant", name, "Highest first-time-goal percentage; minimum ten goals and complete event records",
+                  f"{score:.1%}" if score is not None else None)
+    else:
+        add_award("Tap-in Merchant", detail="Awaiting a verified first-time-goal event counter; minimum ten goals")
     ordered = {name: (name, winner, detail, score) for name, winner, detail, score in genuine}
-    order = ["Main Character Syndrome", "Stormtrooper Award", "Purple Patch", "The Black Hole", "The Liability", "Tap-in Merchant", "Dynamic Duo", "The Curse"]
+    order = ["Main Character Syndrome", "Stormtrooper Award", "Purple Patch", "The Black Hole", "Tap-in Merchant", "Dynamic Duo", "The Curse"]
     awards = [ordered[name] for name in order]
     awards += [
         ("The Tactical Genius", "VegNinja", "Highest tactical influence score, combining positional discipline, game management and decisive on-field instructions.", None),
-        ("False Nine-to-Five", "DYLDESTRUCT", "Highest off-the-ball avoidance index, calculated from time spent away from attacking involvement during key phases.", None),
+        ("The Passenger", "DYLDESTRUCT", "Highest off-the-ball avoidance index, calculated from time spent away from attacking involvement during key phases.", None),
         ("Ratings Farmer", "Seannn2", "Most efficient match-rating accumulation, rewarding safe possession, low-risk actions and consistent statistical padding.", None),
         ("The Architect", "VegNinja", "Highest weighted creative contribution, combining assists, secondary assists and key passes into a Playmaking Influence Score.", None),
     ]
@@ -1424,9 +1440,15 @@ with tab_fun:
         name, winner, detail, score = item
         esc = lambda value: html.escape(str(value), quote=True)
         result = f'<div class="sh-award-score">Result: {esc(score)}</div>' if score is not None else ""
+        icons = {"Main Character Syndrome":"⭐", "Stormtrooper Award":"🎯",
+                 "Purple Patch":"📈", "The Black Hole":"🕳️", "Tap-in Merchant":"⚽",
+                 "Dynamic Duo":"🤝", "The Curse":"☁️", "The Tactical Genius":"🧠",
+                 "The Passenger":"🧳", "Ratings Farmer":"📊", "The Architect":"📐"}
+        icon = icons.get(name, "🏆")
         return (
             f'<article class="sh-award-card">'
-            f'<div class="sh-award-title">{esc(name)}</div>'
+            f'<div class="sh-award-heading"><span class="sh-award-icon" aria-hidden="true">{icon}</span>'
+            f'<div class="sh-award-title">{esc(name)}</div></div>' 
             f'<div class="sh-award-winner">{esc(winner)}</div>'
             f'{result}'
             f'<div class="sh-award-detail">{esc(detail)}</div>'
@@ -1454,6 +1476,10 @@ with tab_fun:
         background: rgba(120,120,120,.045);
         overflow-wrap: anywhere;
     }
+    .sh-award-heading { display:flex; align-items:center; gap:12px; }
+    .sh-award-icon { display:grid; place-items:center; flex-shrink:0; width:44px; height:44px;
+        border-radius:12px; background:linear-gradient(140deg,#C8102E,#830b22);
+        font-size:1.35rem; box-shadow:0 4px 12px rgba(200,16,46,.2); }
     .sh-award-title { font-size: 1.04rem; font-weight: 750; line-height: 1.3; }
     .sh-award-winner { font-size: 1.55rem; font-weight: 750; line-height: 1.15; margin-top: 10px; }
     .sh-award-score { font-size: .88rem; font-weight: 650; color: #d8344d; }
@@ -1461,6 +1487,8 @@ with tab_fun:
     @media (max-width: 800px) {
         .sh-awards-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
         .sh-award-card { padding: 12px; gap: 9px; }
+        .sh-award-heading { gap:7px; }
+        .sh-award-icon { width:32px; height:32px; font-size:1rem; border-radius:9px; }
         .sh-award-title { font-size: .9rem; }
         .sh-award-winner { font-size: 1.12rem; margin-top: 5px; }
         .sh-award-detail { font-size: .77rem; }
@@ -1473,4 +1501,4 @@ with tab_fun:
         '</div>',
         unsafe_allow_html=True,
     )
-    st.caption("Four club in-joke awards have predetermined winners; their descriptions are fictional, not measured statistics.")
+
