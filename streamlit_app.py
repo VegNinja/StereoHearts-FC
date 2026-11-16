@@ -368,6 +368,58 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
+# v2.6 insight helpers. All aggregations are strict about missing source values.
+def sh_complete_sum(frame, key):
+    if frame.empty or key not in frame.columns:
+        return None
+    values = pd.to_numeric(frame[key], errors="coerce")
+    return float(values.sum()) if values.notna().all() else None
+
+
+def sh_rate(frame, numerator, denominator):
+    top, bottom = sh_complete_sum(frame, numerator), sh_complete_sum(frame, denominator)
+    if top is None or bottom is None or bottom <= 0:
+        return None
+    return 100.0 * top / bottom
+
+
+def sh_recent_trend(frame, field="rating", window=5):
+    ordered = frame.sort_values(["played_at", "match_id"], na_position="first")
+    values = pd.to_numeric(ordered.get(field, pd.Series(dtype=float)), errors="coerce").dropna()
+    if len(values) < window * 2:
+        return None
+    return float(values.iloc[-window:].mean() - values.iloc[-2*window:-window].mean())
+
+
+def sh_archetype(frame):
+    # A descriptive style, not an official EA archetype or synthetic overall rating.
+    if frame.empty or len(frame) < 5:
+        return "Emerging talent", "At least five recorded appearances are needed to assign a playing style."
+    candidates = []
+    n = len(frame)
+    for field, label, explanation in (
+        ("assists", "The Playmaker", "A high rate of recorded assists"),
+        ("goals", "The Poacher", "A high rate of recorded goals"),
+        ("tackles_made", "The Enforcer", "High recorded successful-tackle involvement"),
+        ("passes_made", "The Distributor", "High recorded completed-pass involvement"),
+    ):
+        total = sh_complete_sum(frame, field)
+        if total is not None:
+            # Approximate prominence using fixed, transparently chosen per-game baselines.
+            baseline = {"assists":.35, "goals":.65, "tackles_made":2.0, "passes_made":18.0}[field]
+            candidates.append((total / n / baseline, label, explanation))
+    if not candidates:
+        return "Unclassified", "Insufficient complete statistical coverage."
+    _, label, description = max(candidates, key=lambda x:x[0])
+    return label, description + "; descriptive only, not an EA-assigned role."
+
+
+def sh_player_name(frame, pid):
+    rows = frame[frame["player_id"] == str(pid)].sort_values("played_at", na_position="first")
+    return str(rows["player_name"].iloc[-1]) if not rows.empty else str(pid)
+
+
 # Compact reference-style club identity panel; values are live data.
 def _overall_value(keys):
     if not isinstance(overall, dict):
@@ -449,6 +501,63 @@ with tab_snapshot:
 
     if st.session_state.get("last_sync_count"):
         st.caption(f"Last manual sync processed {st.session_state['last_sync_count']} records.")
+    st.subheader("Club pulse")
+    if not all_matches.empty:
+        known = all_matches.dropna(subset=["result_label"]).sort_values(["played_at", "match_id"])
+        recent_form = known.tail(10)
+        if not recent_form.empty:
+            colours = {"W":"#187a54", "D":"#7a6a36", "L":"#aa2840"}
+            badges = "".join(
+                f'<span title="Recorded match {i+1}" style="display:inline-flex;justify-content:center;align-items:center;'
+                f'width:34px;height:34px;border-radius:8px;background:{colours.get(v,"#666")};'
+                f'color:white;font-weight:800;margin:2px">{html.escape(v)}</span>'
+                for i, v in enumerate(recent_form["result_label"].tolist())
+            )
+            st.markdown(badges, unsafe_allow_html=True)
+            wins10 = int(recent_form["result_label"].eq("W").sum())
+            st.caption(f"Oldest → newest · {wins10} wins in the last {len(recent_form)} recorded results")
+            sequence = known["result_label"].tolist()
+            streak_type = sequence[-1]
+            streak_length = 0
+            for outcome in reversed(sequence):
+                if outcome != streak_type:
+                    break
+                streak_length += 1
+            unbeaten = 0
+            for outcome in reversed(sequence):
+                if outcome == "L":
+                    break
+                unbeaten += 1
+            a, b = st.columns(2)
+            a.metric("Current result streak", f"{streak_length} × {streak_type}")
+            b.metric("Current unbeaten run", unbeaten)
+    with st.expander("🏆 Club record book & milestones", expanded=False):
+        known = all_matches.dropna(subset=["result_label"]).copy() if not all_matches.empty else pd.DataFrame()
+        if known.empty:
+            st.info("Club records appear after matches with recognised results are archived.")
+        else:
+            wins_archive = int(known["result_label"].eq("W").sum())
+            known_scores = known.dropna(subset=["goals_for", "goals_against"]).copy()
+            r1,r2,r3 = st.columns(3)
+            r1.metric("Recorded wins", wins_archive)
+            r2.metric("Recorded matches", len(known))
+            r3.metric("Recorded club goals", f"{int(known['goals_for'].sum()):,}" if known["goals_for"].notna().all() else "—")
+            if not known_scores.empty:
+                margins = known_scores.assign(margin=known_scores["goals_for"] - known_scores["goals_against"])
+                victories = margins[margins["result_label"] == "W"]
+                defeats = margins[margins["result_label"] == "L"]
+                if not victories.empty:
+                    best = victories.sort_values("margin",ascending=False).iloc[0]
+                    st.write(f"**Biggest recorded win:** {int(best['goals_for'])}–{int(best['goals_against'])}")
+                if not defeats.empty:
+                    worst = defeats.sort_values("margin").iloc[0]
+                    st.write(f"**Heaviest recorded defeat:** {int(worst['goals_for'])}–{int(worst['goals_against'])}")
+                high = margins.assign(total=margins["goals_for"] + margins["goals_against"]).sort_values("total",ascending=False).iloc[0]
+                st.write(f"**Highest-scoring recorded match:** {int(high['goals_for'])}–{int(high['goals_against'])}")
+            else:
+                st.caption("Score records require actual opponent-goal fields.")
+            st.caption("Records reflect archived history, not necessarily the club's full EA career.")
+
     st.subheader("Recorded results")
     if structured_matches_error:
         st.warning(f"Could not load match results: {structured_matches_error}")
@@ -624,6 +733,34 @@ with tab_snapshot:
                 st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
                 st.caption("Only complete archived EA pitch-third counters are shown; these may not include every turnover.")
 
+# Milestone timeline uses only events provable from archived data.
+with tab_snapshot:
+    with st.expander("📅 Club timeline · recorded milestones", expanded=False):
+        if all_matches.empty:
+            st.info("Milestones will appear after results are archived.")
+        else:
+            chronology = all_matches.sort_values(["played_at","match_id"],na_position="last").copy()
+            milestones=[]
+            def timeline_date(record):
+                return record["played_at"].strftime("%d %b %Y") if pd.notna(record["played_at"]) else "Date unavailable"
+            victories = chronology[chronology["result_label"]=="W"]
+            if not victories.empty:
+                milestones.append((timeline_date(victories.iloc[0]),"First recorded win"))
+                for target in (10,25,50,100,250):
+                    if len(victories)>=target:
+                        milestones.append((timeline_date(victories.iloc[target-1]),f"{target} recorded victories"))
+            if chronology["goals_for"].notna().all():
+                accumulation = chronology["goals_for"].cumsum()
+                for target in (50,100,250,500,1000):
+                    reached=chronology[accumulation>=target]
+                    if not reached.empty:
+                        milestones.append((timeline_date(reached.iloc[0]),f"{target} recorded club goals"))
+            for when, landmark in milestones:
+                st.markdown(f"**{when}** · {landmark}")
+            if not milestones:
+                st.info("Not enough complete archived results for milestones yet.")
+            st.caption("Dates and records reflect the archived sample, not earlier EA matches.")
+
 with tab_squad:
     squad_view = st.selectbox(
         "Squad section", ["Player Profiles", "Squad Compare", "Performance Areas", "Squad Statistics"],
@@ -730,6 +867,31 @@ with tab_squad:
                 st.caption("Conversion rate = goals ÷ recorded shots. Possession rates require all three pitch-third event counters for every included appearance; missing values are left blank.")
     elif squad_view == "Squad Compare":
         st.subheader("Squad Compare")
+        with st.expander("⚔️ Head-to-head player battle",expanded=True):
+            if all_performances.empty or all_performances["player_id"].nunique()<2:
+                st.info("At least two players with archived appearances are required.")
+            else:
+                names_map=all_performances.sort_values("played_at").groupby("player_id")["player_name"].last().to_dict()
+                ids=sorted(names_map,key=lambda x:str(names_map[x]).casefold())
+                h1,h2=st.columns(2)
+                first=h1.selectbox("Player A",ids,index=0,format_func=lambda x:str(names_map[x]),key="h2h_a")
+                second_options=[pid for pid in ids if pid != first]
+                second=h2.selectbox("Player B",second_options,index=0,format_func=lambda x:str(names_map[x]),key="h2h_b")
+                rows=[]
+                for pid in (first,second):
+                    frame=all_performances[all_performances["player_id"]==pid]
+                    n=len(frame)
+                    row={"Player":str(names_map[pid]),"Appearances":n}
+                    for field,label in (("goals","Goals/game"),("assists","Assists/game"),("tackles_made","Tackles/game")):
+                        total=sh_complete_sum(frame,field)
+                        row[label]=round(total/n,2) if total is not None and n else None
+                    row["Pass accuracy %"]=sh_rate(frame,"passes_made","pass_attempts")
+                    row["Average rating"]=round(float(frame["rating"].mean()),2) if frame["rating"].notna().all() else None
+                    rows.append(row)
+                comparison=pd.DataFrame(rows)
+                st.dataframe(comparison,use_container_width=True,hide_index=True)
+                st.caption("Lifetime archived appearances. All comparison values require complete field coverage for that player.")
+
         st.caption("Compare players across six match statistics. The spider chart scales each axis to the highest available selected-player value; point labels show actual figures. Possession lost is shown as a cost (lower is better).")
         if all_performances.empty or "player_id" not in all_performances.columns:
             st.info("No archived player performances are available.")
@@ -1006,47 +1168,131 @@ with tab_squad:
                     "Passing": [("Completed passes", "passes_made"), ("Assists", "assists")],
                     "Defending": [("Successful tackles", "tackles_made"), ("Saves", "saves")],
                 }
-                cards = area_kpis[area]
-                for start in range(0, len(cards), 2):
-                    cols = st.columns(2)
-                    for col, (label, key) in zip(cols, cards[start:start + 2]):
-                        val = stat_total(key)
-                        col.metric(label, f"{val:,.0f}" if val is not None and pd.notna(val) else "—")
-                if area == "Shooting":
-                    goals, shots = stat_total("goals"), stat_total("shots")
-                    if goals is not None and shots is not None and shots > 0:
-                        st.metric("Shot conversion", f"{100 * goals / shots:.1f}%")
+                cards = list(area_kpis[area])
+                if area == "Possession":
+                    trio = [stat_total(key) for _, key in cards]
+                    cards.append(("Total recoveries", None))
+                    extra = sum(trio) if all(v is not None for v in trio) else None
+                elif area == "Shooting":
+                    a, b = stat_total("goals"), stat_total("shots")
+                    extra = (100*a/b) if a is not None and b is not None and b > 0 else None
+                    cards += [("Shot conversion (%)", None), ("Goals per appearance", "goals")]
                 elif area == "Passing":
-                    completed, attempted = stat_total("passes_made"), stat_total("pass_attempts")
-                    if completed is not None and attempted is not None and attempted > 0:
-                        st.metric("Pass accuracy", f"{100 * completed / attempted:.1f}%")
-                elif area == "Defending":
-                    completed, attempted = stat_total("tackles_made"), stat_total("tackle_attempts")
-                    if completed is not None and attempted is not None and attempted > 0:
-                        st.metric("Tackle success", f"{100 * completed / attempted:.1f}%")
-
-                # Chart only complete-coverage counters; do not confuse missing with zero.
-                chart_data = stats_table.dropna(subset=["Total"]).copy()
-                chart_data = chart_data[~chart_data["EA field"].isin(["rating", "seconds_played"])]
-                if not chart_data.empty:
-                    chart_data = chart_data.sort_values("Total", ascending=False).head(8)
-                    plot = alt.Chart(chart_data).mark_bar(color="#C8102E").encode(
-                        x=alt.X("Total:Q", title="Recorded actions"),
-                        y=alt.Y("Statistic:N", sort="-x", title=None),
-                        tooltip=["Statistic:N", alt.Tooltip("Total:Q", format=",.0f")],
-                    ).properties(height=max(180, len(chart_data) * 34))
-                    st.altair_chart(plot, use_container_width=True)
-                st.subheader(f"All {area.lower()} statistics")
-                st.caption("Every recognised numeric counter in this category from the selected player's stored records. "
-                           "Totals and per-game figures are blank when any included match lacks that counter. "
-                           "Swipe the table sideways to inspect source fields and data coverage.")
-                st.dataframe(stats_table.sort_values("Statistic").reset_index(drop=True),
-                             use_container_width=True, hide_index=True, height=460,
-                             column_config={
-                                 "Total": st.column_config.NumberColumn("Total", format="%.1f"),
-                                 "Per game": st.column_config.NumberColumn("Per game", format="%.2f"),
-                                 "EA field": st.column_config.TextColumn("Original EA field"),
-                             })
+                    a, b = stat_total("passes_made"), stat_total("pass_attempts")
+                    extra = (100*a/b) if a is not None and b is not None and b > 0 else None
+                    cards += [("Pass accuracy (%)", None), ("Completed passes / game", "passes_made")]
+                else:
+                    a, b = stat_total("tackles_made"), stat_total("tackle_attempts")
+                    extra = (100*a/b) if a is not None and b is not None and b > 0 else None
+                    cards += [("Tackle success (%)", None), ("Tackles / appearance", "tackles_made")]
+                if len(cards) == 3:
+                    cards.append(("Actions per appearance", None))
+                st.markdown("##### At a glance")
+                for start_idx in range(0, len(cards), 2):
+                    cols = st.columns(2)
+                    for col, (label, key) in zip(cols, cards[start_idx:start_idx+2]):
+                        if key is None:
+                            val = extra if label not in ("Actions per appearance",) else (sum(v for _,k in cards[:3] if (v:=stat_total(k)) is not None) / len(player_data) if len(player_data) and all(stat_total(k) is not None for _,k in cards[:3]) else None)
+                        else:
+                            val = stat_total(key)
+                            if "per appearance" in label.lower() or "/ game" in label.lower():
+                                val = val / len(player_data) if val is not None and len(player_data) else None
+                        col.metric(label, f"{val:,.1f}" if val is not None and pd.notna(val) and ("%" in label or "/" in label or "per appearance" in label.lower()) else (f"{val:,.0f}" if val is not None and pd.notna(val) else "—"))
+                st.markdown("##### Performance visualisation")
+                if area == "Possession":
+                    recoveries = [("Defensive",stat_total("possessionWonDefensiveThird")),
+                                  ("Middle",stat_total("possessionWonMiddleThird")),
+                                  ("Attacking",stat_total("possessionWonAttackingThird"))]
+                    if all(v is not None for _,v in recoveries) and sum(v for _,v in recoveries)>0:
+                        zone_df = pd.DataFrame(recoveries,columns=["Pitch third","Recoveries"])
+                        zone_df["Share"] = 100*zone_df["Recoveries"]/zone_df["Recoveries"].sum()
+                        st.altair_chart(alt.Chart(zone_df).mark_bar(color="#C8102E",cornerRadiusEnd=5).encode(
+                            x=alt.X("Pitch third:N",title=None,sort=["Defensive","Middle","Attacking"]),
+                            y=alt.Y("Recoveries:Q",title="Recorded recoveries"),
+                            tooltip=["Pitch third",alt.Tooltip("Recoveries:Q",format=".0f"),alt.Tooltip("Share:Q",format=".1f")]
+                        ).properties(height=240),use_container_width=True)
+                        share=zone_df.sort_values("Recoveries",ascending=False).iloc[0]
+                        st.caption(f"{share['Share']:.0f}% of recorded recoveries were in the {share['Pitch third'].lower()} third. Pitch thirds are zones, not exact action coordinates.")
+                    else:
+                        st.info("Complete pitch-third recovery counters are needed for the zone breakdown.")
+                else:
+                    compare_keys = {"Shooting":"goals", "Passing":"assists", "Defending":"tackles_made"}
+                    metric = compare_keys[area]
+                    vals=player_data.sort_values(["played_at","match_id"])[["match_id",metric]].copy()
+                    vals[metric]=pd.to_numeric(vals[metric],errors="coerce")
+                    if vals[metric].notna().any():
+                        vals=vals.dropna(subset=[metric]).reset_index(drop=True)
+                        vals["Appearance"] = range(1,len(vals)+1)
+                        st.altair_chart(alt.Chart(vals).mark_bar(color="#C8102E").encode(
+                            x=alt.X("Appearance:O",title="Recorded appearance (chronological)"),
+                            y=alt.Y(f"{metric}:Q",title=nice_name(metric)),
+                            tooltip=["Appearance:O",alt.Tooltip(f"{metric}:Q",format=".0f")]
+                        ).properties(height=220),use_container_width=True)
+                    else:
+                        st.info("No complete event history is available for a meaningful chart.")
+                # Squad benchmarking: identical category and complete metric coverage required.
+                benchmark_field={"Possession":"possessionWonDefensiveThird","Shooting":"goals",
+                                 "Passing":"assists","Defending":"tackles_made"}[area]
+                peer=all_performances.copy()
+                if selected_position != "All positions":
+                    peer=peer[peer["position"]==selected_position]
+                if match_window != "All Time":
+                    peer=peer.sort_values(["played_at","match_id"],ascending=[False,False],na_position="last")
+                    peer=peer.groupby("player_id",group_keys=False).head({"Last 10":10,"Last 5":5,"Last Game":1}[match_window])
+                if area=="Possession":
+                    peer["benchmark"]=peer["raw_data"].apply(lambda v:event_counter(v,(benchmark_field,))) if "raw_data" in peer else float("nan")
+                else:
+                    peer["benchmark"]=pd.to_numeric(peer[benchmark_field],errors="coerce")
+                min_apps=5 if match_window in ("All Time","Last 10") else (3 if match_window=="Last 5" else 1)
+                bench=[]
+                for pid,group in peer.groupby("player_id"):
+                    if len(group)<min_apps or group["benchmark"].isna().any():
+                        continue
+                    bench.append({"Player":sh_player_name(peer,pid),"Per appearance":round(float(group["benchmark"].sum()/len(group)),2),"Selected":pid==chosen_player})
+                st.markdown("##### Squad benchmark")
+                st.caption(f"{nice_name(benchmark_field)} per appearance · minimum {min_apps} recorded games · same position and window")
+                if bench:
+                    bench_df=pd.DataFrame(bench).sort_values("Per appearance",ascending=False).head(12)
+                    st.altair_chart(alt.Chart(bench_df).mark_bar().encode(
+                        x=alt.X("Per appearance:Q",title="Per appearance"),
+                        y=alt.Y("Player:N",sort="-x",title=None),
+                        color=alt.condition(alt.datum.Selected,alt.value("#C8102E"),alt.value("#7c8491")),
+                        tooltip=["Player:N",alt.Tooltip("Per appearance:Q",format=".2f")]
+                    ).properties(height=max(150,len(bench_df)*31)),use_container_width=True)
+                else:
+                    st.info("No squad benchmark qualifies with complete recorded statistics.")
+                st.markdown("##### What the numbers suggest")
+                insights=[]
+                if area=="Possession":
+                    zones=[stat_total(key) for _,key in area_kpis[area]]
+                    if all(x is not None for x in zones) and sum(zones)>0:
+                        winner_index=zones.index(max(zones))
+                        insights.append(f"{('Defensive','Midfield','Attacking')[winner_index]} recoveries account for {max(zones)/sum(zones):.0%} of the recorded three-zone total.")
+                        insights.append(f"Recorded recoveries average {sum(zones)/len(player_data):.2f} per appearance.")
+                elif area=="Shooting":
+                    g,shots=stat_total("goals"),stat_total("shots")
+                    if g is not None and shots is not None and shots>0:
+                        insights.append(f"Recorded shot conversion is {100*g/shots:.1f}% across {len(player_data)} appearances.")
+                elif area=="Passing":
+                    made,attempted=stat_total("passes_made"),stat_total("pass_attempts")
+                    if made is not None and attempted is not None and attempted>0:
+                        insights.append(f"Pass completion is {100*made/attempted:.1f}% across completely archived pass records.")
+                else:
+                    made,attempted=stat_total("tackles_made"),stat_total("tackle_attempts")
+                    if made is not None and attempted is not None and attempted>0:
+                        insights.append(f"Recorded tackle success is {100*made/attempted:.1f}%.")
+                if insights:
+                    for insight in insights:
+                        st.write("• " + insight)
+                else:
+                    st.caption("More fully recorded EA actions are required to generate defensible insights.")
+                with st.expander(f"Detailed {area.lower()} event statistics",expanded=False):
+                    st.caption("Source totals only appear where all selected appearances contain the event. Missing values are not zero.")
+                    st.dataframe(stats_table.sort_values("Statistic").reset_index(drop=True),
+                        use_container_width=True,hide_index=True,height=420,
+                        column_config={"Total":st.column_config.NumberColumn("Total",format="%.1f"),
+                        "Per game":st.column_config.NumberColumn("Per game",format="%.2f"),
+                        "EA field":st.column_config.TextColumn("Original EA field")})
     elif squad_view == "Player Profiles":
             st.subheader("StereoHearts FC — player profiles")
             st.caption("Statistics are based on archived match performances, not necessarily full career totals.")
@@ -1110,6 +1356,25 @@ with tab_squad:
                         columns = st.columns(3)
                         for column, (label, value) in zip(columns, metrics[start:start + 3]):
                             column.metric(label, value)
+
+                    style, style_reason=sh_archetype(selected)
+                    st.markdown(f"**Playing style: {style}**")
+                    st.caption(style_reason)
+                    recent_change=sh_recent_trend(selected,"rating")
+                    if recent_change is not None:
+                        st.metric("Recent form · rating change", f"{recent_change:+.2f}",help="Last five recorded ratings compared with previous five")
+                    else:
+                        st.caption("Form comparison requires at least ten recorded match ratings.")
+                    selected_sorted=selected.sort_values(["played_at","match_id"])
+                    if len(selected_sorted)>=5 and selected_sorted["goals"].notna().all():
+                        rolling=selected_sorted[["goals","assists"]].copy()
+                        rolling["Goals / game (last 5)"]=rolling["goals"].rolling(5,min_periods=5).mean()
+                        if rolling["assists"].notna().all():
+                            rolling["Assists / game (last 5)"]=rolling["assists"].rolling(5,min_periods=5).mean()
+                        rolling=rolling.dropna(subset=["Goals / game (last 5)"]).reset_index(drop=True)
+                        rolling.index=rolling.index+5
+                        st.markdown("**Rolling attacking form**")
+                        st.line_chart(rolling[[c for c in rolling if c.endswith("(last 5)")]],y_label="Per appearance")
 
                     st.subheader("Match rating trend")
                     rating_history = selected.sort_values("played_at").copy()
@@ -1185,6 +1450,23 @@ with tab_analytics:
             c.metric("Goals against", int(row["goals_against"]) if pd.notna(row["goals_against"]) else "—")
             d.metric("DNF", "Unknown" if pd.isna(row["dnf"]) else ("Yes" if str(row["dnf"]).lower() in ("true", "1") else "No"))
             st.caption(f"Match type: {row['match_type']} · Opponent ID: {row.get('opponent_id', '—')}")
+            if pd.notna(row["goals_for"]) and pd.notna(row["goals_against"]):
+                headline=f"StereoHearts {int(row['goals_for'])}–{int(row['goals_against'])} opponents"
+            else:
+                headline=f"StereoHearts recorded a {str(row['result_label']) if pd.notna(row['result_label']) else 'result'}"
+            st.markdown(f"#### {headline}")
+            club_match=all_performances[all_performances["match_id"]==selected_id] if not all_performances.empty else pd.DataFrame()
+            if not club_match.empty:
+                if club_match["goals"].notna().all() and club_match["assists"].notna().all():
+                    contributions=club_match.assign(contrib=club_match["goals"]+club_match["assists"])
+                    leaders=contributions[contributions["contrib"]>0].sort_values("contrib",ascending=False)
+                    if not leaders.empty:
+                        top=leaders.iloc[0]
+                        st.caption(f"Leading recorded contributor: {top['player_name']} ({int(top['goals'])} goals, {int(top['assists'])} assists).")
+                rated=club_match.dropna(subset=["rating"])
+                if not rated.empty:
+                    best=rated.sort_values(["rating","goals","assists"],ascending=False).iloc[0]
+                    st.markdown(f"**Top rated player:** {best['player_name']} · {best['rating']:.2f} / 10 (archived EA rating)")
             st.subheader("Player performances")
             if all_performances.empty:
                 st.info("No individual performances have been archived.")
@@ -1477,8 +1759,29 @@ with tab_fun:
                   f"{score:.1%}" if score is not None else None)
     else:
         add_award("Tap-in Merchant", detail="Awaiting stored goalsFirstTime (event 128) data; minimum ten goals")
+    # Only award Comeback King if the match record explicitly identifies a comeback.
+    # A final score cannot establish whether the club was previously behind.
+    comeback_match_ids=set()
+    if not all_matches.empty:
+        for _,match in all_matches[all_matches["result_label"]=="W"].iterrows():
+            raw=match.get("raw_data")
+            if not isinstance(raw,dict):
+                continue
+            if raw.get("wasTrailing") is True or raw.get("cameFromBehind") is True or raw.get("comebackWin") is True:
+                comeback_match_ids.add(str(match["match_id"]))
+    if comeback_match_ids and not perf.empty:
+        relevant=perf[perf["match_id"].isin(comeback_match_ids)].dropna(subset=["goals","assists"])
+        if not relevant.empty:
+            relevant=relevant.assign(involvements=relevant["goals"]+relevant["assists"])
+            scores=relevant.groupby("player_id")["involvements"].sum()
+            winner,score=winner_from(scores)
+            add_award("Comeback King",winner,"Most recorded goal involvements in explicitly flagged comeback wins", f"{int(score)} contributions" if score is not None else None)
+        else:
+            add_award("Comeback King",detail="Comeback matches identified, but complete goal-contribution records unavailable")
+    else:
+        add_award("Comeback King",detail="Awaiting reliable match data proving the club was behind before winning")
     ordered = {name: (name, winner, detail, score) for name, winner, detail, score in genuine}
-    order = ["Main Character Syndrome", "Stormtrooper Award", "Purple Patch", "The Black Hole", "Tap-in Merchant", "Dynamic Duo", "The Curse"]
+    order = ["Main Character Syndrome", "Stormtrooper Award", "Purple Patch", "The Black Hole", "Tap-in Merchant", "Dynamic Duo", "The Curse", "Comeback King"]
     awards = [ordered[name] for name in order]
     awards += [
         ("The Tactical Genius", "VegNinja", "Highest tactical influence.", "94.7 / 100"),
@@ -1495,7 +1798,7 @@ with tab_fun:
         icons = {"Main Character Syndrome":"⭐", "Stormtrooper Award":"🎯",
                  "Purple Patch":"📈", "The Black Hole":"🕳️", "Tap-in Merchant":"⚽",
                  "Dynamic Duo":"🤝", "The Curse":"☁️", "The Tactical Genius":"🧠",
-                 "The Passenger":"🧳", "Ratings Farmer":"📊", "The Architect":"📐"}
+                 "The Passenger":"🧳", "Ratings Farmer":"📊", "The Architect":"📐", "Comeback King":"👑"}
         icon = icons.get(name, "🏆")
         return (
             f'<article class="sh-award-card">'
