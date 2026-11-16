@@ -101,14 +101,19 @@ h1 {font-weight: 800 !important;}
 .st-key-compare_player_picker [data-testid="column"] {
   flex:0 1 calc(20% - 9px) !important; min-width:120px !important; width:auto !important;
 }
+/* Head-to-head selectors: side by side on desktop, never wider than phone viewport. */
 .st-key-h2h_player_picker [data-testid="stHorizontalBlock"] {
-  display:flex !important; flex-direction:row !important; flex-wrap:nowrap !important;
-  align-items:flex-start; gap:12px !important;
+  display:flex !important; flex-wrap:wrap !important; gap:12px !important;
+  width:100% !important; min-width:0 !important;
 }
 .st-key-h2h_player_picker [data-testid="column"] {
-  flex:1 1 0 !important; min-width:0 !important; width:50% !important;
+  flex:1 1 210px !important; min-width:0 !important;
+  width:auto !important; max-width:100% !important;
 }
-.st-key-h2h_player_picker [data-testid="stSelectbox"] {min-width:0 !important;}
+.st-key-h2h_player_picker [data-testid="stSelectbox"] { min-width:0 !important; width:100% !important; }
+@media (max-width: 480px) {
+  .st-key-h2h_player_picker [data-testid="column"] { flex-basis:100% !important; }
+}
 @media (max-width:700px) {
   .st-key-compare_player_picker [data-testid="column"] {flex:1 1 calc(50% - 10px) !important;}
 }
@@ -1008,85 +1013,89 @@ with tab_squad:
                    ("Pass completion",_pass,"%"),
                    ("Average match rating",_rating,"rating"),
                    ("Win rate",_win,"%")]
-            # Centre the entire comparison panel with breathing room at each side.
-            gutter_l, centre, gutter_r = st.columns([1, 7, 1])
-            with centre:
-                st.markdown(
-                    f'<h3 style="text-align:center; margin:10px 0 18px">'
-                    f'{html.escape(str(names[first]))} &nbsp; ⚔️ &nbsp; '
-                    f'{html.escape(str(names[second]))}</h3>',
-                    unsafe_allow_html=True,
-                )
-                a_stats,b_stats = st.columns(2)
-                a_stats.metric(f"{names[first]} · appearances",len(selected[0]))
-                b_stats.metric(f"{names[second]} · appearances",len(selected[1]))
-                st.markdown("#### The statistical battle")
-                st.caption("Each metric is plotted vertically from a shared zero line. "
-                           "Red extends downward for Player A and blue upward for Player B; "
-                           "bar lengths are normalised within each category, with real values on the bars.")
-                battle_rows=[]
-                unavailable=[]
-                winscore=[0,0]
-                known=0
-                for order,(label,fn,unit) in enumerate(stats):
-                    values=[fn(g) for g in selected]
-                    if any(v is None for v in values):
-                        unavailable.append(label)
-                        continue
-                    known+=1
-                    delta=values[0]-values[1]
-                    winner=0 if delta>1e-8 else (1 if delta< -1e-8 else None)
-                    if winner is not None:
-                        winscore[winner]+=1
-                    maximum=max(abs(v) for v in values) or 1.0
-                    for index,(pid,value) in enumerate(zip((first,second),values)):
-                        # Signed height is *only* for presentation. Actual measured values
-                        # stay visible as labels and tooltips, not converted into scores.
-                        normalised=min(1.0,abs(value)/maximum)*(1 if index else -1)
-                        display=f"{value:.1f}{'%' if unit=='%' else ''}"
-                        verdict="✓" if winner==index else ("✕" if winner is not None else "=")
-                        battle_rows.append({
-                            "Category":label,"Order":order,"Player":str(names[pid]),
-                            "Side": "Player A" if index==0 else "Player B",
-                            "Height":normalised,"Actual":value,
-                            "Display":f"{verdict} {display}",
-                        })
-                if battle_rows:
-                    battle=pd.DataFrame(battle_rows)
-                    # Domain sorts metrics by their intended order, never alphabetically.
-                    order=[label for label,_,_ in stats if label not in unavailable]
-                    encoding={
-                        "x":alt.X("Category:N",sort=order,title=None,
-                                  axis=alt.Axis(labelAngle=-30,labelLimit=155,labelFontSize=11)),
-                        "y":alt.Y("Height:Q",scale=alt.Scale(domain=[-1.37,1.37]),
-                                  axis=alt.Axis(labels=False,ticks=False,domain=False,title=None)),
-                    }
-                    bars=alt.Chart(battle).mark_bar(size=36,cornerRadiusTopLeft=4,cornerRadiusTopRight=4).encode(
-                        **encoding,
-                        color=alt.Color("Side:N",scale=alt.Scale(domain=["Player A","Player B"],
-                            range=["#C8102E","#3989DB"]),legend=alt.Legend(title=None,orient="bottom")),
-                        tooltip=["Player:N","Category:N",alt.Tooltip("Actual:Q",format=".2f")]
-                    )
-                    # Tick/cross is printed beside the real value on the winning/losing side.
-                    labels_top=alt.Chart(battle[battle["Height"]>=0]).mark_text(
-                        dy=-12,fontSize=12,fontWeight="bold",color="#3989DB").encode(
-                            **encoding,text="Display:N")
-                    labels_bottom=alt.Chart(battle[battle["Height"]<0]).mark_text(
-                        dy=13,fontSize=12,fontWeight="bold",color="#C8102E").encode(
-                            **encoding,text="Display:N")
-                    baseline=alt.Chart(pd.DataFrame({"zero":[0]})).mark_rule(
-                        strokeWidth=1.5,color="#8c929c").encode(y="zero:Q")
-                    st.altair_chart((bars+baseline+labels_top+labels_bottom).properties(
-                        height=420,padding={"top":17,"bottom":10}),use_container_width=True)
-                    first_col,second_col=st.columns(2)
-                    first_col.markdown(f"**{html.escape(str(names[first]))}: {winscore[0]} category wins**")
-                    second_col.markdown(f"**{html.escape(str(names[second]))}: {winscore[1]} category wins**")
-                    st.caption(f"{known} comparable categories · ✓ category winner · ✕ category loser · "
-                               "= tied · Categories weighted equally. Not an official EA rating.")
-                if unavailable:
-                    st.caption("Unavailable comparisons (incomplete recorded data): " + ", ".join(unavailable))
-                if not battle_rows:
-                    st.info("No metrics have complete data for both selected players.")
+            # Full-width, responsive diverging chart: avoid nested Streamlit columns
+            # that previously collapsed the entire comparison to a tiny centre strip.
+            st.markdown(
+                '<div style="text-align:center;margin:12px 0 6px;">'
+                '<div style="font-weight:800;font-size:clamp(1.1rem,3vw,1.7rem);overflow-wrap:anywhere">'
+                f'{html.escape(str(names[first]))} <span style="color:#C8102E">VS</span> '
+                f'{html.escape(str(names[second]))}</div>'
+                '<div style="opacity:.72;font-size:.85rem;margin-top:4px">'
+                f'{len(selected[0])} vs {len(selected[1])} recorded appearances · {html.escape(window)}'
+                '</div></div>', unsafe_allow_html=True,
+            )
+            battle_rows=[]
+            unavailable=[]
+            winscore=[0,0]
+            known=0
+            for order,(label,fn,unit) in enumerate(stats):
+                values=[fn(g) for g in selected]
+                if any(v is None for v in values):
+                    unavailable.append(label)
+                    continue
+                known+=1
+                delta=values[0]-values[1]
+                winner=0 if delta>1e-8 else (1 if delta< -1e-8 else None)
+                if winner is not None:
+                    winscore[winner]+=1
+                # Per-metric common scale, preserving actual values in labels/tooltips.
+                # Percentages always use 100 as their logical maximum.
+                maximum=100.0 if unit=='%' else (max(abs(v) for v in values) or 1.0)
+                for index,(pid,value) in enumerate(zip((first,second),values)):
+                    size=min(1.0,max(0.0,abs(value)/maximum))
+                    direction=-1 if index==0 else 1
+                    display=f"{value:.1f}{'%' if unit=='%' else ''}"
+                    verdict="✓" if winner==index else ("✕" if winner is not None else "=")
+                    battle_rows.append({
+                        'Category':label,'Order':order,'Player':str(names[pid]),
+                        'Side':'Player A' if index==0 else 'Player B',
+                        'Signed':size*direction,'Zero':0.0,
+                        'Actual':value,'Display':f'{verdict}  {display}',
+                    })
+            if battle_rows:
+                st.markdown('#### The statistical battle')
+                st.caption('Red bars extend left for Player A; blue bars extend right for Player B. '
+                           'Each pair shares its own scale, with actual values and category winners shown.')
+                battle=pd.DataFrame(battle_rows)
+                order=[label for label,_,_ in stats if label not in unavailable]
+                y=alt.Y('Category:N', sort=order, title=None,
+                        axis=alt.Axis(labelLimit=180,labelFontSize=12,labelPadding=8,
+                                      ticks=False,domain=False))
+                x=alt.X('Signed:Q',scale=alt.Scale(domain=[-1.43,1.43]),
+                        axis=alt.Axis(labels=False,ticks=False,domain=False,grid=False,title=None))
+                legend=alt.Legend(title=None,orient='top',symbolType='square')
+                bars=(alt.Chart(battle).mark_bar(size=25,cornerRadiusEnd=4)
+                      .encode(y=y,x=x,x2='Zero:Q',
+                              color=alt.Color('Side:N',scale=alt.Scale(
+                                  domain=['Player A','Player B'],range=['#C8102E','#3989DB']),
+                                  legend=legend),
+                              tooltip=[alt.Tooltip('Player:N'),alt.Tooltip('Category:N'),
+                                       alt.Tooltip('Actual:Q',format='.2f')]))
+                left=(alt.Chart(battle[battle['Side']=='Player A'])
+                      .mark_text(align='right',dx=-7,fontSize=12,fontWeight='bold',color='#F07383')
+                      .encode(x=x,y=y,text='Display:N'))
+                right=(alt.Chart(battle[battle['Side']=='Player B'])
+                       .mark_text(align='left',dx=7,fontSize=12,fontWeight='bold',color='#6EB5FF')
+                       .encode(x=x,y=y,text='Display:N'))
+                baseline=(alt.Chart(pd.DataFrame({'zero':[0.0]}))
+                          .mark_rule(color='#a1a1aa',strokeWidth=1.3)
+                          .encode(x='zero:Q'))
+                chart=(bars+baseline+left+right).properties(
+                    height=max(300, len(order)*57),
+                    padding={'top':8,'left':6,'right':10,'bottom':8}
+                ).configure_view(stroke=None)
+                st.altair_chart(chart,use_container_width=True)
+                score_left,score_right=st.columns(2)
+                with score_left:
+                    st.markdown(f'**🔴 {html.escape(str(names[first]))}: {winscore[0]} category wins**')
+                with score_right:
+                    st.markdown(f'**🔵 {html.escape(str(names[second]))}: {winscore[1]} category wins**')
+                st.caption(f'{known} comparable categories · ✓ winner · ✕ loser · = tie. '
+                           'Categories count equally; not an official EA player rating.')
+            if unavailable:
+                st.caption('Unavailable comparisons (incomplete recorded data): '+', '.join(unavailable))
+            if not battle_rows:
+                st.info('No metrics have complete data for both selected players.')
     elif squad_view == "Performance Areas":
         st.subheader("Performance Areas")
         st.caption("Explore each player's recorded match statistics. Missing event data is never treated as zero.")
