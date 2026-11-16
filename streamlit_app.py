@@ -1,4 +1,5 @@
 import json
+import html
 import re
 import streamlit as st
 import pandas as pd
@@ -123,6 +124,7 @@ with st.sidebar:
                                 CLUB_NAME,
                                 bundle
                             )
+                        st.cache_data.clear()  # Invalidate archived-table snapshots after a successful sync.
                         st.session_state["last_sync_count"] = count
                         st.success(f"Saved {count} records for {CLUB_NAME}.")
                     except Exception as exc:
@@ -148,25 +150,28 @@ matches = data.get("matches", [])
 match_players = data.get("match_players", [])
 
 # Read structured matches once for the snapshot, Overview and Analytics tabs.
-def read_all_rows(table_name, club_id, page_size=1000):
+@st.cache_data(ttl=60, show_spinner=False)
+def read_all_rows(table_name, club_id, _store, page_size=1000):
+    """Fetch all Supabase pages once per cache window, across Streamlit reruns.
+
+    `_store` is deliberately excluded from Streamlit's cache-key hashing.
+    Manual EA sync clears the cache so new results become visible immediately.
+    """
     rows = []
-    offset = 0
-    while True:
+    for offset in range(0, 1_000_000_000, page_size):
         response = (
-            store.client.table(table_name)
-            .select("*")
+            _store.client.table(table_name).select("*")
             .eq("club_id", int(club_id))
-            .range(offset, offset + page_size - 1)
-            .execute()
+            .range(offset, offset + page_size - 1).execute()
         )
         batch = response.data or []
         rows.extend(batch)
         if len(batch) < page_size:
             return rows
-        offset += page_size
+    raise RuntimeError("Supabase pagination exceeded safety limit")
 
 try:
-    stored_matches = pd.DataFrame(read_all_rows("matches", CLUB_ID))
+    stored_matches = pd.DataFrame(read_all_rows("matches", CLUB_ID, store))
     structured_matches_error = None
 except Exception as exc:
     stored_matches = pd.DataFrame()
@@ -190,7 +195,7 @@ def opponent_goals(row):
 
 # Shared archived datasets are prepared before any tabs render.
 try:
-    stored_players = pd.DataFrame(read_all_rows("match_player_stats", CLUB_ID))
+    stored_players = pd.DataFrame(read_all_rows("match_player_stats", CLUB_ID, store))
 except Exception as exc:
     st.warning(f"Could not load player statistics: {exc}")
     stored_players = pd.DataFrame()
@@ -245,25 +250,35 @@ def _prepared_players():
     return frame
 
 
-
-
-
 all_matches = _prepared_matches()
 all_performances = _prepared_players()
 
 
 def event_counter(raw, names):
-    """Extract only an explicitly named EA event field; missing stays unknown."""
+    """Read named event counters without constructing a DataFrame per event.
+
+    Exact top-level keys take priority; nested dictionary keys are supported.
+    Missing or non-numeric values remain NaN, never fabricated zeros.
+    """
     if not isinstance(raw, dict):
         return float("nan")
-    nested = pd.json_normalize(raw, sep=".").iloc[0].to_dict()
     for key in names:
-        if key in nested:
-            return pd.to_numeric(nested[key], errors="coerce")
-        for full_key, value in nested.items():
-            if full_key.rsplit(".", 1)[-1] == key:
-                return pd.to_numeric(value, errors="coerce")
+        if key in raw:
+            return pd.to_numeric(raw[key], errors="coerce")
+        pending = list(reversed(list(raw.values())))
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                if key in value:
+                    return pd.to_numeric(value[key], errors="coerce")
+                pending.extend(reversed(list(value.values())))
     return float("nan")
+
+
+def sum_event_counters(raw, names):
+    """Sum an event group only when *every* required counter is present."""
+    values = [event_counter(raw, (name,)) for name in names]
+    return sum(values) if all(pd.notna(value) for value in values) else float("nan")
 
 profiles = pd.DataFrame()
 if not stored_players.empty and "player_id" in stored_players.columns:
@@ -292,8 +307,6 @@ if not stored_players.empty and "player_id" in stored_players.columns:
         profiles["match_type"] = "Unknown"
     profiles["match_type"] = profiles["match_type"].fillna("Unknown").astype(str)
     profiles = profiles.sort_values("played_at", na_position="last")
-
-
 
 
 st.markdown("""
@@ -1146,7 +1159,7 @@ with tab_explorer:
                 explorer = all_performances.copy()
             else:
                 try:
-                    explorer = pd.DataFrame(read_all_rows("opponent_player_stats", CLUB_ID))
+                    explorer = pd.DataFrame(read_all_rows("opponent_player_stats", CLUB_ID, store))
                 except Exception as exc:
                     explorer = pd.DataFrame()
                     st.warning(f"Opponent table could not be loaded: {exc}")
@@ -1362,7 +1375,8 @@ with tab_fun:
         name, score = winner_from(pd.Series(changes, dtype=float))
         add_award("Purple Patch", name, "Largest improvement in average rating: last five versus previous five games", f"+{score:.2f}" if score is not None else None)
         raw = perf.get("raw_data", pd.Series([{}] * len(perf), index=perf.index))
-        lost = raw.apply(lambda v: event_counter(v, ["possessionLostDefensiveThird"])) + raw.apply(lambda v: event_counter(v, ["possessionLostMiddleThird"])) + raw.apply(lambda v: event_counter(v, ["possessionLostAttackingThird"]))
+        loss_keys = ("possessionLostDefensiveThird", "possessionLostMiddleThird", "possessionLostAttackingThird")
+        lost = raw.apply(lambda value: sum_event_counters(value, loss_keys))
         losses = perf[["player_id"]].copy(); losses["lost"] = lost
         groups = losses.dropna().groupby("player_id")["lost"]
         scores = groups.mean()[groups.size() >= 5] if not losses.dropna().empty else pd.Series(dtype=float)
@@ -1399,17 +1413,64 @@ with tab_fun:
     order = ["Main Character Syndrome", "Stormtrooper Award", "Purple Patch", "The Black Hole", "The Liability", "Tap-in Merchant", "Dynamic Duo", "The Curse"]
     awards = [ordered[name] for name in order]
     awards += [
-        ("The Tactical Genius", "VegNinja", "Fixed club in-joke — not a calculated award", None),
-        ("False Nine-to-Five", "DYLDESTRUCT", "Fixed club in-joke — not a calculated award", None),
-        ("Ratings Farmer", "Seannn2", "Fixed club in-joke — not a calculated award", None),
-        ("The Architect", "VegNinja", "Highest weighted creative contribution, combining assists, secondary assists and key passes. Fixed club in-joke — not calculated.", None),
+        ("The Tactical Genius", "VegNinja", "Highest tactical influence score, combining positional discipline, game management and decisive on-field instructions.", None),
+        ("False Nine-to-Five", "DYLDESTRUCT", "Highest off-the-ball avoidance index, calculated from time spent away from attacking involvement during key phases.", None),
+        ("Ratings Farmer", "Seannn2", "Most efficient match-rating accumulation, rewarding safe possession, low-risk actions and consistent statistical padding.", None),
+        ("The Architect", "VegNinja", "Highest weighted creative contribution, combining assists, secondary assists and key passes into a Playmaking Influence Score.", None),
     ]
-    for start in range(0, 12, 3):
-        cols = st.columns(3, gap="small")
-        for col, (name, winner, detail, score) in zip(cols, awards[start:start+3]):
-            with col:
-                with st.container(border=True):
-                    st.markdown(f"**{name}**")
-                    st.markdown(f"### {winner}")
-                    if score is not None: st.caption(f"Result: {score}")
-                    st.caption(detail)
+    # Use a real CSS grid rather than st.columns: Streamlit stacks columns
+    # vertically on narrow mobile screens.
+    def award_card(item, index):
+        name, winner, detail, score = item
+        esc = lambda value: html.escape(str(value), quote=True)
+        result = f'<div class="sh-award-score">Result: {esc(score)}</div>' if score is not None else ""
+        return (
+            f'<article class="sh-award-card">'
+            f'<div class="sh-award-title">{esc(name)}</div>'
+            f'<div class="sh-award-winner">{esc(winner)}</div>'
+            f'{result}'
+            f'<div class="sh-award-detail">{esc(detail)}</div>'
+            f'</article>'
+        )
+
+    st.markdown("""
+    <style>
+    .sh-awards-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+        align-items: stretch;
+        margin-top: 16px;
+    }
+    .sh-award-card {
+        min-width: 0;
+        border: 1px solid rgba(150,150,150,.35);
+        border-top: 3px solid #C8102E;
+        border-radius: 12px;
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        background: rgba(120,120,120,.045);
+        overflow-wrap: anywhere;
+    }
+    .sh-award-title { font-size: 1.04rem; font-weight: 750; line-height: 1.3; }
+    .sh-award-winner { font-size: 1.55rem; font-weight: 750; line-height: 1.15; margin-top: 10px; }
+    .sh-award-score { font-size: .88rem; font-weight: 650; color: #d8344d; }
+    .sh-award-detail { font-size: .88rem; line-height: 1.5; opacity: .82; margin-top: auto; }
+    @media (max-width: 800px) {
+        .sh-awards-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+        .sh-award-card { padding: 12px; gap: 9px; }
+        .sh-award-title { font-size: .9rem; }
+        .sh-award-winner { font-size: 1.12rem; margin-top: 5px; }
+        .sh-award-detail { font-size: .77rem; }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="sh-awards-grid">' +
+        "".join(award_card(item, index) for index, item in enumerate(awards)) +
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Four club in-joke awards have predetermined winners; their descriptions are fictional, not measured statistics.")
