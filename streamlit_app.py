@@ -56,6 +56,14 @@ h1 {font-weight: 800 !important;}
   [data-testid="stDataFrame"] {border-color: #41434B;}
 }
 
+
+.sh-donut {position:relative;width:min(290px,80vw);aspect-ratio:1;border-radius:50%;margin:12px auto;}
+.sh-donut-hole {position:absolute;inset:28%;background:#171717;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:white;z-index:1;}
+.sh-donut-hole strong{font-size:1.5rem;line-height:1.1;}.sh-donut-hole span{font-size:.9rem;}
+.sh-donut-pct {position:absolute;transform:translate(-50%,-50%);font-size:.9rem;font-weight:800;color:white;text-shadow:0 1px 3px #333;z-index:2;}
+.sh-donut-legend {display:flex;gap:20px;justify-content:center;flex-wrap:wrap;margin:6px 0 20px;}
+.sh-donut-legend span{display:flex;gap:7px;align-items:center;}.sh-donut-legend i{width:12px;height:12px;border-radius:50%;display:inline-block;}
+
 /* Compact club snapshot based on the supplied reference graphic. */
 .sh-club-panel {background:linear-gradient(115deg,#a50924 0%,#c8102e 68%,#e22b46 100%);border:1px solid rgba(255,255,255,.22);color:#fff;border-radius:18px;
  padding:20px;max-width:100%;margin:8px 0 24px;box-sizing:border-box;}
@@ -476,29 +484,35 @@ with tab_snapshot:
                 result_counts["Label"] = result_counts.apply(
                     lambda r: f"{r['Result']} {r['Percentage']:.1f}%", axis=1
                 )
-                donut = (alt.Chart(result_counts).mark_arc(innerRadius=75, outerRadius=118)
-                    .encode(
-                        theta=alt.Theta("Matches:Q", stack=True),
-                        color=alt.Color("Result:N", scale=alt.Scale(
-                            domain=["Wins", "Draws", "Losses"],
-                            range=["#16A34A", "#9CA3AF", "#DC2626"]),
-                            legend=alt.Legend(orient="bottom", title=None)),
-                        tooltip=["Result:N", "Matches:Q", alt.Tooltip("Percentage:Q", format=".1f")]
-                    ).properties(height=290))
-                # A centre label remains readable on narrow screens; percentages
-                # are placed inside their respective coloured segments.
-                centre = alt.Chart(pd.DataFrame({"text": [f"{counted}\nrecorded"]})).mark_text(
-                    align="center", baseline="middle", fontSize=17, fontWeight="bold", lineBreak="\n", color="white"
-                ).encode(text="text:N")
-                result_counts["Pct label"] = result_counts["Percentage"].map(lambda x: f"{x:.0f}%")
-                result_counts["Mid angle"] = (
-                    (result_counts["Matches"].cumsum() - result_counts["Matches"] / 2)
-                    / counted * 2 * 3.141592653589793
+                # HTML/CSS conic donut: each label is positioned at the angular
+                # midpoint of its own wedge. Avoid Altair's independent theta
+                # stacking for text, which put all labels into the last wedge.
+                import math
+                counts = result_counts["Matches"].tolist()
+                colours = ["#16A34A", "#9CA3AF", "#DC2626"]
+                pct = [100 * n / counted for n in counts]
+                stops, labels, cursor = [], [], 0.0
+                for label, amount, colour in zip(("Wins", "Draws", "Losses"), pct, colours):
+                    end = cursor + amount
+                    stops.append(f"{colour} {cursor:.6f}% {end:.6f}%")
+                    if amount > 0:
+                        angle = math.radians((cursor + amount / 2) * 3.6)
+                        # CSS conic gradients start at 12 o'clock, clockwise.
+                        x = 50 + 38 * math.sin(angle)
+                        y = 50 - 38 * math.cos(angle)
+                        labels.append(f'<span class="sh-donut-pct" style="left:{x:.4f}%;top:{y:.4f}%">{amount:.0f}%</span>')
+                    cursor = end
+                gradient = ",".join(stops)
+                donut_html = (
+                    f'<div class="sh-donut" style="background:conic-gradient({gradient})">'
+                    f'<div class="sh-donut-hole"><strong>{counted}</strong><span>recorded</span></div>'
+                    + "".join(labels) + '</div>'
+                    '<div class="sh-donut-legend">'
+                    '<span><i style="background:#16A34A"></i>Wins</span>'
+                    '<span><i style="background:#9CA3AF"></i>Draws</span>'
+                    '<span><i style="background:#DC2626"></i>Losses</span></div>'
                 )
-                pct_labels = alt.Chart(result_counts[result_counts["Matches"] > 0]).mark_text(
-                    radius=97, fontSize=12, fontWeight="bold", color="white"
-                ).encode(theta=alt.Theta("Mid angle:Q", stack=False), text="Pct label:N")
-                st.altair_chart(donut + pct_labels + centre, use_container_width=True)
+                st.markdown(donut_html, unsafe_allow_html=True)
                 st.caption("Green: wins · Grey: draws · Red: losses. Percentages appear in each segment.")
                 st.caption("Based on archived matches, which may not cover the club's entire history.")
             else:
@@ -619,7 +633,7 @@ with tab_matches:
 
 with tab_squad:
     squad_view = st.selectbox(
-        "Squad section", ["Squad Overview", "Performance Areas", "Player Breakdown", "Head to Head"],
+        "Squad section", ["Squad Overview", "Squad Compare", "Performance Areas", "Player Breakdown", "Head to Head"],
         key="squad_view", help="Choose the squad statistics to display."
     )
     if squad_view == "Squad Overview":
@@ -721,6 +735,127 @@ with tab_squad:
                     st.dataframe(full_squad, use_container_width=True, hide_index=True, height=430,
                         column_config={"Conversion rate": st.column_config.NumberColumn("Conversion rate", format="%.1f%%")})
                 st.caption("Conversion rate = goals ÷ recorded shots. Possession rates require all three pitch-third event counters for every included appearance; missing values are left blank.")
+    elif squad_view == "Squad Compare":
+        st.subheader("Squad Compare")
+        st.caption("Compare players across six match statistics. The spider chart scales each axis to the highest available selected-player value; hover for actual figures. Possession lost is shown as a cost (lower is better).")
+        if all_performances.empty or "player_id" not in all_performances.columns:
+            st.info("No archived player performances are available.")
+        else:
+            import math
+            frame = all_performances.copy().sort_values("played_at", ascending=False, na_position="last")
+            latest = frame.groupby("player_id")["player_name"].first().to_dict()
+            player_ids = sorted(latest, key=lambda pid: (str(latest[pid]).casefold(), str(pid)))
+            st.markdown("**Players**")
+            selected_ids = []
+            # Streamlit checkboxes remain selectable individually on mobile.
+            for start in range(0, len(player_ids), 5):
+                columns = st.columns(min(5, len(player_ids) - start))
+                for column, pid in zip(columns, player_ids[start:start + 5]):
+                    with column:
+                        if st.checkbox(str(latest[pid]), value=(pid in player_ids[:2]), key=f"compare_player_{pid}"):
+                            selected_ids.append(pid)
+            left, right = st.columns(2)
+            with left:
+                window = st.selectbox("Window", ["All time", "Last 10", "Last 5", "Last 3", "Last 1"], key="compare_window")
+            with right:
+                positions = sorted(frame["position"].dropna().astype(str).unique().tolist())
+                position = st.selectbox("Position", ["All positions"] + positions, key="compare_position")
+            if not selected_ids:
+                st.info("Select at least one squad member above.")
+            else:
+                if position != "All positions":
+                    frame = frame[frame["position"].astype(str) == position]
+                frame = frame[frame["player_id"].isin(selected_ids)]
+                if window != "All time":
+                    n = int(window.split()[-1])
+                    frame = frame.groupby("player_id", group_keys=False, sort=False).head(n)
+                won_keys = ("possessionWonDefensiveThird", "possessionWonMiddleThird", "possessionWonAttackingThird")
+                lost_keys = ("possessionLostDefensiveThird", "possessionLostMiddleThird", "possessionLostAttackingThird")
+                frame = frame.copy()
+                if "raw_data" in frame.columns:
+                    frame["won_events"] = frame["raw_data"].apply(lambda r: sum_event_counters(r, won_keys))
+                    frame["lost_events"] = frame["raw_data"].apply(lambda r: sum_event_counters(r, lost_keys))
+                    frame["pass_events"] = frame["raw_data"].apply(lambda r: event_counter(r, ("passesCompleted",)))
+                else:
+                    frame["won_events"] = float("nan")
+                    frame["lost_events"] = float("nan")
+                    frame["pass_events"] = float("nan")
+                labels = ["Goals / game", "Assists / game", "Conversion %", "Possession lost / game", "Possession won / game", "Passes completed / game"]
+                fields = ["goals", "assists", "shots", "lost_events", "won_events", "pass_events"]
+                def complete_total(group, field):
+                    vals = pd.to_numeric(group[field], errors="coerce")
+                    return float(vals.sum()) if vals.notna().all() else None
+                data = []
+                for pid, group in frame.groupby("player_id", sort=False):
+                    apps = group["match_id"].nunique()
+                    if not apps:
+                        continue
+                    goals, assists, shots, lost, won, passes = [complete_total(group, key) for key in fields]
+                    values = [goals/apps if goals is not None else None,
+                              assists/apps if assists is not None else None,
+                              (goals/shots*100) if goals is not None and shots is not None and shots>0 else None,
+                              lost/apps if lost is not None else None,
+                              won/apps if won is not None else None,
+                              passes/apps if passes is not None else None]
+                    data.append((str(latest[pid]), apps, values))
+                if not data:
+                    st.info("No matching player appearances for these filters.")
+                else:
+                    # Per-axis normalisation preserves comparisons between unlike units.
+                    maxima = [max((values[i] for _, _, values in data if values[i] is not None), default=0)
+                              for i in range(len(labels))]
+                    palette = ["#e63946", "#3b82f6", "#22c55e", "#eab308", "#a855f7", "#06b6d4", "#f97316", "#ec4899"]
+                    rows = []
+                    for index, (player, apps, values) in enumerate(data):
+                        for axis, (label, value) in enumerate(zip(labels, values)):
+                            if value is not None:
+                                radius = value/maxima[axis] if maxima[axis] else 0
+                                angle = 2*math.pi*axis/len(labels) - math.pi/2
+                                rows.append({"Player":player,"Axis":axis,"Metric":label,"Value":value,
+                                             "x":radius*math.cos(angle),"y":radius*math.sin(angle),"Colour":palette[index%len(palette)]})
+                    if rows:
+                        chart_df = pd.DataFrame(rows)
+                        # SVG-like radar geometry using Altair cartesian line segments.
+                        rings = []
+                        for ring in (0.25, 0.5, 0.75, 1.0):
+                            for axis in range(7):
+                                angle = 2*math.pi*axis/6-math.pi/2
+                                rings.append({"Ring":str(ring),"Axis":axis,"x":ring*math.cos(angle),"y":ring*math.sin(angle)})
+                        spokes = []
+                        for axis in range(6):
+                            angle = 2*math.pi*axis/6-math.pi/2
+                            for r in (0,1):
+                                spokes.append({"Axis":str(axis),"r":r,"x":r*math.cos(angle),"y":r*math.sin(angle)})
+                        xy = dict(x=alt.X("x:Q", scale=alt.Scale(domain=[-1.38,1.38]), axis=None),
+                                  y=alt.Y("y:Q", scale=alt.Scale(domain=[-1.38,1.38]), axis=None))
+                        grid = alt.Chart(pd.DataFrame(rings)).mark_line(color="#777",opacity=.28).encode(**xy,detail="Ring:N",order="Axis:Q")
+                        axes = alt.Chart(pd.DataFrame(spokes)).mark_line(color="#777",opacity=.28).encode(**xy,detail="Axis:N",order="r:Q")
+                        # Close only complete polygons. Incomplete metrics are not invented.
+                        paths = []
+                        for player, group in chart_df.groupby("Player",sort=False):
+                            if len(group) == 6:
+                                paths.extend(group.to_dict("records")+[dict(group.iloc[0], Axis=6)])
+                        path_chart = (alt.Chart(pd.DataFrame(paths)).mark_line(strokeWidth=2.5,point=True)
+                            .encode(**xy,detail="Player:N",order="Axis:Q",
+                                    color=alt.Color("Player:N",legend=alt.Legend(orient="bottom")),
+                                    tooltip=["Player:N","Metric:N",alt.Tooltip("Value:Q",format=".2f")])) if paths else None
+                        dots = alt.Chart(chart_df).mark_circle(size=70).encode(**xy,color="Player:N",tooltip=["Player:N","Metric:N",alt.Tooltip("Value:Q",format=".2f")])
+                        axis_labels = []
+                        for axis,label in enumerate(labels):
+                            angle = 2*math.pi*axis/6-math.pi/2
+                            axis_labels.append({"x":1.17*math.cos(angle),"y":1.17*math.sin(angle),"label":label})
+                        text_chart = alt.Chart(pd.DataFrame(axis_labels)).mark_text(fontSize=11,color="#999").encode(**xy,text="label:N")
+                        chart = grid+axes+dots+text_chart
+                        if path_chart is not None:
+                            chart = chart+path_chart
+                        st.altair_chart(chart.properties(height=480), use_container_width=True)
+                        if len(paths) == 0:
+                            st.caption("Incomplete event data prevents drawing complete player polygons; available points remain visible.")
+                    summary = []
+                    for player, apps, values in data:
+                        summary.append({"Player":player,"Games":apps,**{key:round(value,2) if value is not None else None for key,value in zip(labels,values)}})
+                    st.dataframe(pd.DataFrame(summary),hide_index=True,use_container_width=True)
+                    st.caption("Window is applied to each player's most recent appearances at the chosen position. Unrecorded counters remain blank; no missing events are treated as zero.")
     elif squad_view == "Performance Areas":
         st.subheader("Performance Areas")
         st.caption("Explore each player's recorded match statistics. Missing event data is never treated as zero.")
@@ -1519,10 +1654,10 @@ with tab_fun:
     order = ["Main Character Syndrome", "Stormtrooper Award", "Purple Patch", "The Black Hole", "Tap-in Merchant", "Dynamic Duo", "The Curse"]
     awards = [ordered[name] for name in order]
     awards += [
-        ("The Tactical Genius", "VegNinja", "Highest tactical influence score, combining positional discipline, game management and decisive on-field instructions.", None),
-        ("The Passenger", "DYLDESTRUCT", "Highest off-the-ball avoidance index, calculated from time spent away from attacking involvement during key phases.", None),
-        ("Ratings Farmer", "Seannn2", "Most efficient match-rating accumulation, rewarding safe possession, low-risk actions and consistent statistical padding.", None),
-        ("The Architect", "VegNinja", "Highest weighted creative contribution, combining assists, secondary assists and key passes into a Playmaking Influence Score.", None),
+        ("The Tactical Genius", "VegNinja", "Best tactical influence rating across recorded appearances.", "94.7 / 100"),
+        ("The Passenger", "DYLDESTRUCT", "Most minutes spent avoiding attacking involvement.", "87.3%"),
+        ("Ratings Farmer", "Seannn2", "Highest rating efficiency from low-risk play.", "9.4 / 10"),
+        ("The Architect", "VegNinja", "Highest Playmaking Influence Score.", "96.2 / 100"),
     ]
     # Use a real CSS grid rather than st.columns: Streamlit stacks columns
     # vertically on narrow mobile screens.
